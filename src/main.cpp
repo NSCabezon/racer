@@ -10,6 +10,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <array>
 #include <algorithm>
 #include <fstream>
 #include <sstream>
@@ -65,6 +66,14 @@ extern std::unique_ptr<ultramodern::renderer::RendererContext> create_swe1r_rend
 // The recompiled entrypoint function
 extern "C" void recomp_entrypoint(uint8_t* rdram, recomp_context* ctx);
 
+#if defined(__APPLE__)
+// support_apple.mm
+extern "C" void swe1r_pin_metal_layer_scale(void* layer);
+#endif
+
+// Defined below (input callbacks); used by the SI read-button response.
+bool get_input(int controller_num, uint16_t* buttons, float* x, float* y);
+
 // From audio.cpp
 extern void swe1r_queue_samples(int16_t* samples, size_t num_samples);
 extern size_t swe1r_get_frames_remaining();
@@ -94,25 +103,63 @@ extern "C" void __osSiRawStartDma_recomp(uint8_t* rdram, recomp_context* ctx) {
     uint32_t buf = (uint32_t)ctx->r5;
 
     if (dir == 0 && buf != 0) {
-        // PIF -> DRAM read: fill in the controller status response.
-        // The block is word-aligned, so big-endian-packed word writes land the
-        // bytes correctly for the recompiled MEM_B (XOR 3) accessors.
+        // PIF -> DRAM read. The game laid out its command block in this same
+        // buffer on the preceding DRAM->PIF write (8 bytes per channel:
+        // pad | tx | rx | cmd | 4 response bytes), so inspect the command and
+        // fill in the matching response. The block is word-aligned, so
+        // big-endian-packed word accesses land the bytes correctly for the
+        // recompiled MEM_B (XOR 3) accessors.
+        auto r32 = [&](uint32_t addr) -> uint32_t {
+            return *(uint32_t*)(rdram + (addr - 0x80000000u));
+        };
         auto w32 = [&](uint32_t addr, uint32_t value) {
             *(uint32_t*)(rdram + (addr - 0x80000000u)) = value;
         };
+        static uint32_t read_count = 0;
+        read_count++;
         for (int ch = 0; ch < 4; ch++) {
             uint32_t c = buf + ch * 8;
-            if (ch == 0) {
-                w32(c + 0, 0xFF010300u); // pad, tx=1, rx=3 (no error), cmd=0
-                w32(c + 4, 0x050000FFu); // type=0x0005 (standard pad), no pak
+            uint32_t hdr = r32(c);
+            uint8_t cmd = (uint8_t)(hdr & 0xFF);
+            if (ch != 0) {
+                w32(c + 0, (hdr & 0xFFFF00FFu) | 0x00008000u); // rx error bit: no controller
+                w32(c + 4, 0xFFFFFFFFu);
+                continue;
+            }
+            if (cmd == 0x01) {
+                // CONT_CMD_READ_BUTTON: buttons (u16), stick x (s8), stick y (s8)
+                uint16_t buttons = 0; float x = 0.0f, y = 0.0f;
+                get_input(0, &buttons, &x, &y);
+                int8_t sx = (int8_t)std::clamp((int)(x * 80.0f), -80, 80);
+                int8_t sy = (int8_t)std::clamp((int)(y * 80.0f), -80, 80);
+                w32(c + 0, (hdr & 0xFFFF00FFu) | 0x00000001u); // clear rx error bits, keep cmd
+                w32(c + 4, ((uint32_t)buttons << 16) | ((uint32_t)(uint8_t)sx << 8) | (uint8_t)sy);
+                if (buttons != 0 && (read_count % 30) == 0) {
+                    printf("[si] read_button -> buttons=0x%04X x=%d y=%d\n", buttons, sx, sy);
+                }
             } else {
-                w32(c + 0, 0xFF018300u); // byte2=0x83 -> error bit set
-                w32(c + 4, 0xFFFFFFFFu); // no controller on this channel
+                // CONT_CMD_REQUEST_STATUS (0x00) / RESET (0xFF): standard pad, no pak.
+                w32(c + 0, 0xFF010300u); // pad, tx=1, rx=3 (no error), cmd=0
+                w32(c + 4, 0x050000FFu); // type=0x0005, status 0, pad
+                if (read_count <= 4) printf("[si] status -> standard pad on channel 0 (cmd=0x%02X)\n", cmd);
             }
         }
-        printf("[si] __osSiRawStartDma read  -> controller status written to 0x%08X\n", buf);
-    } else {
-        printf("[si] __osSiRawStartDma write -> dir=%d buf=0x%08X (acked)\n", dir, buf);
+    } else if (dir != 0) {
+        // DRAM -> PIF write: dump each distinct 64-byte command block once so
+        // the PIF emulation can be matched to what the game actually sends.
+        static uint32_t write_count = 0;
+        static std::vector<std::array<uint8_t, 64>> seen;
+        write_count++;
+        std::array<uint8_t, 64> blk{};
+        for (int i = 0; i < 64; i++) blk[i] = rdram[((buf + i) ^ 3) - 0x80000000u];
+        bool known = false;
+        for (auto& b : seen) if (b == blk) { known = true; break; }
+        if (!known && seen.size() < 16) {
+            seen.push_back(blk);
+            printf("[si] PIF block #%zu (write %u, buf=0x%08X):", seen.size(), write_count, buf);
+            for (int i = 0; i < 64; i++) printf("%s%02X", (i % 8) ? " " : " | ", blk[i]);
+            printf("\n");
+        }
     }
 
     // No real hardware to wait on — signal SI completion immediately.
@@ -128,10 +175,38 @@ extern "C" void __osSiRawStartDma_recomp(uint8_t* rdram, recomp_context* ctx) {
 // to this function by tools/post_recomp_patches.py.
 //
 //   a0 = event id, a1 = message queue, a2 = message
+// SP completion ordering. ultramodern reports "RSP done" the moment a gfx
+// task is dequeued, before RT64 has parsed the display list. On hardware the
+// RSP has finished reading the list when that interrupt fires, and this game
+// starts rebuilding the same (double-buffered) list right after it, so RT64
+// ended up parsing a list being overwritten: random garbage, endless texrect
+// loops, reads past 8 MB. We point ultramodern's SP event at a sink queue and
+// deliver the real message ourselves: after RT64 parsed the list (send_dl), or
+// immediately for audio tasks (no-op microcode).
+static constexpr int32_t kSpSinkQueue = 0x800A7E80; // same sink the VI-state hack uses
+static std::atomic<int32_t> g_sp_real_mq{0};
+static std::atomic<int32_t> g_sp_real_msg{0};
+
+extern "C" void swe1r_signal_sp_done() {
+    int32_t mq = g_sp_real_mq.load(std::memory_order_relaxed);
+    if (mq != 0) {
+        ultramodern::enqueue_external_message(mq, (OSMesg)g_sp_real_msg.load(std::memory_order_relaxed), false, false);
+    }
+}
+
 extern "C" void swe1r_osSetEventMesg_recomp(uint8_t* rdram, recomp_context* ctx) {
     OSEvent  event = (OSEvent)ctx->r4;
     int32_t  mq    = (int32_t)ctx->r5;
     OSMesg   msg   = (OSMesg)ctx->r6;
+
+    if (event == OS_EVENT_SP) {
+        printf("[events] osSetEventMesg(SP, mq=0x%08X, msg=0x%08X) -> deferred until the display list is parsed\n",
+               (uint32_t)mq, (uint32_t)msg);
+        g_sp_real_mq.store(mq, std::memory_order_relaxed);
+        g_sp_real_msg.store((int32_t)msg, std::memory_order_relaxed);
+        osSetEventMesg(rdram, OS_EVENT_SP, kSpSinkQueue, 0);
+        return;
+    }
 
     if (event == OS_EVENT_VI) {
         printf("[events] osSetEventMesg(VI) -> osViSetEvent(mq=0x%08X, msg=0x%08X, retrace=1)\n",
@@ -143,6 +218,56 @@ extern "C" void swe1r_osSetEventMesg_recomp(uint8_t* rdram, recomp_context* ctx)
     printf("[events] osSetEventMesg(event=%u, mq=0x%08X, msg=0x%08X)\n",
            (unsigned)event, (uint32_t)mq, (uint32_t)msg);
     osSetEventMesg(rdram, event, mq, msg);
+}
+
+// osViSetSpecialFeatures(func): forwarded to ultramodern, logged. SWE1R_NO_SPECIAL=1
+// ignores it (diagnostic: the game enables the VI dither filter and disables
+// gamma for its hi-res modes, control 0x13052).
+extern "C" void osViSetSpecialFeatures_recomp(uint8_t* rdram, recomp_context* ctx);
+extern "C" void swe1r_osViSetSpecialFeatures_recomp(uint8_t* rdram, recomp_context* ctx) {
+    static const bool ignore = std::getenv("SWE1R_NO_SPECIAL") != nullptr;
+    printf("[vi] osViSetSpecialFeatures(0x%08X)%s\n", (uint32_t)ctx->r4, ignore ? " ignored" : "");
+    if (!ignore) osViSetSpecialFeatures_recomp(rdram, ctx);
+    ctx->r2 = 0;
+}
+
+// RSP task yield emulation. The game's SP scheduler (func_8002E2FC and friends,
+// flags at 0x800A2670..0x800A2694) requests osSpTaskYield when an audio task is
+// still "in flight" at frame start, waits for the SP completion, then asks
+// osSpTaskYielded: if yielded it parks the task and resumes it after the gfx
+// task (0x8002E548); if not, it leaves its audio-pending flag set and the next
+// frame requests a yield with nothing running, waiting forever. ultramodern
+// runs tasks to completion instantly and librecomp answers "never yielded",
+// which is exactly the deadlock. Answering "yielded" after a request keeps the
+// game's state machine consistent. The resumed audio task is simply run again;
+// harmless while audio is a no-op (revisit when real audio microcode lands).
+static std::atomic<bool> g_sp_yield_requested{false};
+
+extern "C" void swe1r_osSpTaskYield_recomp(uint8_t* rdram, recomp_context* ctx) {
+    g_sp_yield_requested.store(true, std::memory_order_relaxed);
+    ctx->r2 = 0;
+}
+
+extern "C" void swe1r_osSpTaskYielded_recomp(uint8_t* rdram, recomp_context* ctx) {
+    bool yielded = g_sp_yield_requested.exchange(false, std::memory_order_relaxed);
+    static uint32_t count = 0;
+    if (++count <= 5) printf("[sp] osSpTaskYielded -> %d\n", yielded ? 1 : 0);
+    ctx->r2 = yielded ? 1 : 0;
+}
+
+// osPiStartDma(mb, pri, dir, devAddr, dramAddr, size, mq): logged pass-through
+// to librecomp's synchronous DMA (the game's PI manager thread is stubbed).
+extern "C" void osPiStartDma_recomp(uint8_t* rdram, recomp_context* ctx);
+extern "C" void swe1r_osPiStartDma_recomp(uint8_t* rdram, recomp_context* ctx) {
+    static uint32_t count = 0;
+    uint32_t sp = (uint32_t)ctx->r29;
+    auto r32 = [&](uint32_t addr) -> uint32_t { return *(uint32_t*)(rdram + (addr - 0x80000000u)); };
+    uint32_t dram = r32(sp + 0x10), size = r32(sp + 0x14), mq = r32(sp + 0x18);
+    if (++count <= 40 || (count % 50) == 0) {
+        printf("[pi] DMA #%u dir=%u rom=0x%08X -> 0x%08X size=0x%X mq=0x%08X\n",
+               count, (uint32_t)ctx->r6, (uint32_t)ctx->r7, dram, size, mq);
+    }
+    osPiStartDma_recomp(rdram, ctx);
 }
 
 // osPiReadIo(devAddr, u32* data): single-word PIO read from the cartridge. The
@@ -199,6 +324,9 @@ static SDL_Window* g_window = nullptr;
 // sound yet, but the game proceeds — and graphics tasks (M_GFXTASK) never reach
 // here anyway; submit_rsp_task routes those straight to the RT64 renderer.
 static RspExitReason swe1r_noop_ucode(uint8_t* /*rdram*/, uint32_t /*ucode_addr*/) {
+    // Audio task "completed": deliver the real SP message now (ultramodern's
+    // own completion goes to the sink queue, see swe1r_osSetEventMesg_recomp).
+    swe1r_signal_sp_done();
     return RspExitReason::Broke;
 }
 
@@ -284,6 +412,7 @@ ultramodern::renderer::WindowHandle create_window(ultramodern::gfx_callbacks_t::
     ultramodern::renderer::WindowHandle handle{};
     handle.window = wminfo.info.cocoa.window;
     handle.view = SDL_Metal_GetLayer(metal_view);
+    swe1r_pin_metal_layer_scale(handle.view);
     return handle;
 #else
 #error "create_window: unsupported platform"
@@ -303,6 +432,10 @@ void update_gfx(ultramodern::gfx_callbacks_t::gfx_data_t) {
                     ultramodern::quit();
                 }
                 break;
+            case SDL_WINDOWEVENT:
+                printf("[sdl] window event %u (data %d,%d)\n", (unsigned)event.window.event,
+                       event.window.data1, event.window.data2);
+                break;
         }
     }
 }
@@ -315,12 +448,65 @@ void poll_input() {
     // SDL event polling is done in update_gfx
 }
 
+// Scripted input for unattended runs: SWE1R_AUTOINPUT="12:start,30:a" presses
+// the named button at that many seconds after start, held for half a second.
+// Buttons: start a b z l r up down left right.
+static uint16_t autoinput_buttons_at(double t_seconds) {
+    struct Press { double t; uint16_t mask; };
+    static std::vector<Press> presses;
+    static bool parsed = false;
+    if (!parsed) {
+        parsed = true;
+        if (const char* spec = std::getenv("SWE1R_AUTOINPUT")) {
+            std::string str(spec);
+            size_t pos = 0;
+            while (pos < str.size()) {
+                size_t comma = str.find(',', pos);
+                std::string item = str.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+                size_t colon = item.find(':');
+                if (colon != std::string::npos) {
+                    double t = atof(item.substr(0, colon).c_str());
+                    std::string name = item.substr(colon + 1);
+                    uint16_t mask = 0;
+                    if (name == "start") mask = 0x1000; else if (name == "a") mask = 0x8000;
+                    else if (name == "b") mask = 0x4000; else if (name == "z") mask = 0x2000;
+                    else if (name == "l") mask = 0x0020; else if (name == "r") mask = 0x0010;
+                    else if (name == "up") mask = 0x0800; else if (name == "down") mask = 0x0400;
+                    else if (name == "left") mask = 0x0200; else if (name == "right") mask = 0x0100;
+                    if (mask) presses.push_back({ t, mask });
+                }
+                if (comma == std::string::npos) break;
+                pos = comma + 1;
+            }
+            printf("[input] SWE1R_AUTOINPUT: %zu scripted presses\n", presses.size());
+        }
+    }
+    uint16_t out = 0;
+    for (const Press& p : presses) {
+        if (t_seconds >= p.t && t_seconds < p.t + 0.5) out |= p.mask;
+    }
+    return out;
+}
+
 bool get_input(int controller_num, uint16_t* buttons, float* x, float* y) {
     if (controller_num != 0) return false;
 
     *buttons = 0;
     *x = 0.0f;
     *y = 0.0f;
+
+    {
+        using namespace std::chrono;
+        static const auto t0 = steady_clock::now();
+        double t = duration<double>(steady_clock::now() - t0).count();
+        uint16_t scripted = autoinput_buttons_at(t);
+        if (scripted) {
+            static uint16_t last = 0;
+            if (scripted != last) printf("[input] scripted buttons 0x%04X at %.1fs\n", scripted, t);
+            last = scripted;
+            *buttons |= scripted;
+        }
+    }
 
     // Basic keyboard input
     const uint8_t* keys = SDL_GetKeyboardState(nullptr);
@@ -380,6 +566,7 @@ static std::atomic<uint32_t> g_unblack_at{0};
 
 extern "C" void swe1r_osViBlack_recomp(uint8_t* rdram, recomp_context* ctx) {
     uint8_t active = (uint8_t)ctx->r4;
+    printf("[vi] osViBlack(%u) at retrace %u\n", active, g_vi_count.load(std::memory_order_relaxed));
     osViBlack(active);
     if (active) {
         g_unblack_at.store(g_vi_count.load(std::memory_order_relaxed) + 2, std::memory_order_relaxed);
@@ -389,9 +576,12 @@ extern "C" void swe1r_osViBlack_recomp(uint8_t* rdram, recomp_context* ctx) {
     ctx->r2 = 0;
 }
 
+void swe1r_dl_watchdog_tick(); // rt64_render_context.cpp
+
 void vi_callback() {
     // Called every VI interrupt
     uint32_t n = g_vi_count.fetch_add(1, std::memory_order_relaxed) + 1;
+    swe1r_dl_watchdog_tick();
 
     uint32_t target = g_unblack_at.load(std::memory_order_relaxed);
     if (target != 0 && n >= target) {
@@ -792,7 +982,10 @@ int main(int argc, char* argv[]) {
     game_entry.display_name = "Star Wars Episode I: Racer";
     game_entry.game_id = u8"swe1racer";
     game_entry.mod_game_id = "swe1racer";
-    game_entry.save_type = recomp::SaveType::Eep4k;
+    // 16 kbit EEPROM (2 KB): the game reads two 0x3F0-byte blocks at EEPROM
+    // addresses 0 and 0x80. Eep4k (512 B) made librecomp's save_read overflow
+    // its buffer and corrupt the heap.
+    game_entry.save_type = recomp::SaveType::Eep16k;
     game_entry.is_enabled = true;
     game_entry.entrypoint_address = (gpr)(int32_t)0x80000400; // Sign-extend for MEM macros
     game_entry.entrypoint = recomp_entrypoint;
@@ -821,11 +1014,53 @@ int main(int argc, char* argv[]) {
     // Set up config path
     recomp::register_config_path(std::filesystem::current_path());
 
+    // Graphics defaults (RT64 reads these through update_config / at setup):
+    // render at an integer multiple of the window, keep the original 4:3,
+    // 60 Hz, modest MSAA. There is no settings UI yet.
+    {
+        ultramodern::renderer::GraphicsConfig gfx{};
+        gfx.developer_mode = false;
+        gfx.res_option  = ultramodern::renderer::Resolution::Auto;
+        gfx.wm_option   = ultramodern::renderer::WindowMode::Windowed;
+        gfx.hr_option   = ultramodern::renderer::HUDRatioMode::Original;
+        gfx.api_option  = ultramodern::renderer::GraphicsApi::Auto;
+        gfx.ar_option   = ultramodern::renderer::AspectRatio::Original;
+        gfx.msaa_option = ultramodern::renderer::Antialiasing::MSAA4X;
+        gfx.rr_option   = ultramodern::renderer::RefreshRate::Original;
+        gfx.hpfb_option = ultramodern::renderer::HighPrecisionFramebuffer::Auto;
+        gfx.rr_manual_value = 60;
+        gfx.ds_option = 1;
+        // Developer overrides until there is a settings UI:
+        //   SWE1R_RES=original|original2x|auto   SWE1R_MSAA=0|2|4|8   SWE1R_ASPECT=original|expand
+        if (const char* r = std::getenv("SWE1R_RES")) {
+            std::string v(r);
+            gfx.res_option = (v == "original") ? ultramodern::renderer::Resolution::Original
+                           : (v == "original2x") ? ultramodern::renderer::Resolution::Original2x
+                           : ultramodern::renderer::Resolution::Auto;
+        }
+        if (const char* m = std::getenv("SWE1R_MSAA")) {
+            int v = atoi(m);
+            gfx.msaa_option = (v >= 8) ? ultramodern::renderer::Antialiasing::MSAA8X
+                            : (v >= 4) ? ultramodern::renderer::Antialiasing::MSAA4X
+                            : (v >= 2) ? ultramodern::renderer::Antialiasing::MSAA2X
+                            : ultramodern::renderer::Antialiasing::None;
+        }
+        if (const char* a = std::getenv("SWE1R_ASPECT")) {
+            gfx.ar_option = (std::string(a) == "expand") ? ultramodern::renderer::AspectRatio::Expand
+                                                          : ultramodern::renderer::AspectRatio::Original;
+        }
+        printf("[gfx] res=%d msaa=%d aspect=%d\n", (int)gfx.res_option, (int)gfx.msaa_option, (int)gfx.ar_option);
+        ultramodern::renderer::set_graphics_config(gfx);
+    }
+
     // Build the configuration
     recomp::Configuration cfg{};
     cfg.argc = argc;
     cfg.argv = argv;
     cfg.project_version = { 0, 1, 0, "-alpha" };
+    // SP completions go to a sink queue (see swe1r_osSetEventMesg_recomp); never
+    // requeue them when it is full, just drop them.
+    cfg.message_queue_control.requeue_sp = false;
 
     // RSP callbacks
     recomp::rsp::callbacks_t rsp_callbacks{};

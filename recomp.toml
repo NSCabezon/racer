@@ -36,14 +36,12 @@ stubs = [
     "cache_writeback_800887D0",
     "cache_inval_80088AD0",
     # osViSetEvent at 0x8008C090: renamed and handled by N64Recomp reimplemented_funcs
-    # func_8008C100 split: dispatch portion still stubbed (COP0 instructions)
-    "func_8008C100_dispatch",
+    # 0x8008C100 osEepromLongRead, 0x8008C190 osEepromLongWrite, 0x8008C280 osEepromProbe,
+    # 0x8008C390 osViSetSpecialFeatures, 0x80094C80 osEepromRead, 0x80094ED0 osEepromWrite:
+    # reimplemented by librecomp/ultramodern, not stubbed.
     # osGetTime/osSetCompare COP0 helpers after osGetCount (0x8008C550)
     "func_8008C560",
-    "func_8008C190",
-    "func_8008C280",
     # func_8008C390 split: tail portion still stubbed
-    "func_8008C390_tail",
     # osRecvMesg, osGetCount: handled by N64Recomp reimplemented_funcs
     # 0x8008C770 = osViGetCurrentFramebuffer, 0x8008C7B0 = osJamMesg: reimplemented, not stubbed
     # func_8008C930 split: exception handler still stubbed
@@ -124,9 +122,7 @@ stubs = [
     # osCreateViManager, osCreatePiManager: handled by N64Recomp reimplemented_funcs
     "osPiStartDma_candidate_800944E0",
     "func_800947F0",
-    "func_80094C80",
     "func_80094E44",
-    "func_80094ED0",
     "func_80095048",
     "func_800950F4",
     "osPiManager_candidate_800952AC",

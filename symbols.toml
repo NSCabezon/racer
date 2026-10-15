@@ -3799,8 +3799,9 @@ size = 0x98000
   vram = 0x8008ACD8
   size = 0xD8
 
+  # osSpTaskYielded(task): __osSpGetStatus & SP_STATUS_YIELDED (0x100). Host-emulated, see main.cpp.
   [[section.functions]]
-  name = "func_8008ADB0"
+  name = "osSpTaskYielded"
   vram = 0x8008ADB0
   size = 0x80
 
@@ -3826,8 +3827,9 @@ size = 0x98000
   vram = 0x8008B14C
   size = 0x44
 
+  # osSpTaskYield(): __osSpSetStatus(SP_SET_YIELD). Host-emulated, see main.cpp.
   [[section.functions]]
-  name = "func_8008B190"
+  name = "osSpTaskYield"
   vram = 0x8008B190
   size = 0x20
 
@@ -3892,39 +3894,46 @@ size = 0x98000
   vram = 0x8008C090
   size = 0x70
 
-  # Split: func_8008C100 contains __osDispatchThread (0x50) + osGetCount (0x40)
+  # osEepromLongRead(mq, address, buffer, nbytes): loops osEepromRead (0x80094C80) per 8-byte block.
   [[section.functions]]
-  name = "func_8008C100_dispatch"
+  name = "osEepromLongRead"
   vram = 0x8008C100
-  size = 0x50
+  size = 0x90
 
-  # NOT osGetCount — disasm is lbu/lw/sw, no mfc0, and it has zero callers.
-  # The real osGetCount is 0x8008C550 (mfc0 $9). Renamed to free the name.
+  # osEepromLongWrite(mq, address, buffer, nbytes): loops osEepromWrite (0x80094ED0).
   [[section.functions]]
-  name = "func_8008C150"
-  vram = 0x8008C150
-  size = 0x40
-
-  [[section.functions]]
-  name = "func_8008C190"
+  name = "osEepromLongWrite"
   vram = 0x8008C190
   size = 0xF0
 
+  # osEepromProbe(mq): __osSiGetAccess, __osEepStatus, type 0x8000 -> 1 (4k), 0xC000 -> 2 (16k).
   [[section.functions]]
-  name = "func_8008C280"
+  name = "osEepromProbe"
   vram = 0x8008C280
-  size = 0x110
+  size = 0x70
 
-  # Split: func_8008C390 = tail code (0x20) + osRecvMesg (0x1A0)
   [[section.functions]]
-  name = "func_8008C390_tail"
+  # bcopy-style byte memcpy(dst, src, n). Used by sprintf's output callback.
+  name = "memcpy_8008C2F0"
+  vram = 0x8008C2F0
+  size = 0x2C
+
+  [[section.functions]]
+  name = "strlen_8008C31C"
+  vram = 0x8008C31C
+  size = 0x28
+
+  [[section.functions]]
+  # strchr(s, c) plus padding.
+  name = "strchr_8008C344"
+  vram = 0x8008C344
+  size = 0x4C
+
+  # osViSetSpecialFeatures(func): sets/clears bits in __osViNext->control. Not osRecvMesg.
+  [[section.functions]]
+  name = "osViSetSpecialFeatures"
   vram = 0x8008C390
-  size = 0x20
-
-  [[section.functions]]
-  name = "osRecvMesg_unused_8008C3B0"
-  vram = 0x8008C3B0
-  size = 0x1A0
+  size = 0x1C0
 
   # osGetCount: 0x8008C550 is `mfc0 $v0, $9` (Count register) + `jr $ra`.
   # Was wrongly flipped to osSendMesg, which made ultramodern deref the junk
@@ -4435,8 +4444,9 @@ size = 0x98000
   vram = 0x800947F0
   size = 0x490
 
+  # osEepromRead(mq, address, buffer): PIF channel-4 read block. Reimplemented by librecomp (save file).
   [[section.functions]]
-  name = "func_80094C80"
+  name = "osEepromRead"
   vram = 0x80094C80
   size = 0x1C4
 
@@ -4445,8 +4455,9 @@ size = 0x98000
   vram = 0x80094E44
   size = 0x8C
 
+  # osEepromWrite(mq, address, buffer). Reimplemented by librecomp (save file).
   [[section.functions]]
-  name = "func_80094ED0"
+  name = "osEepromWrite"
   vram = 0x80094ED0
   size = 0x178
 

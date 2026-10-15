@@ -42,6 +42,11 @@ if(WIN32)
     link_directories("C:/vcpkg/installed/x64-windows/lib/manual-link")
 endif()
 set(RT64_STATIC ON CACHE BOOL "Build RT64 as static library" FORCE)
+# Note: RT64 builds with Retina support off (it sizes its output in window
+# points). SDL's Metal view creates a backing-scale (2x) CAMetalLayer, so
+# src/support_apple.mm pins the layer to contentsScale 1 to match. Enabling
+# PLUME_APPLE_RETINA_ENABLED instead made RT64 collapse to ~1 fps in the game's
+# 640x480 interlaced mode.
 add_subdirectory(${RT64_DIR} ${CMAKE_BINARY_DIR}/rt64)
 
 # =============================================================================

@@ -26,7 +26,7 @@ MARKER = "@post-recomp-redirect"
 
 # func name -> ultramodern reimplementation to call instead
 REDIRECTS = {
-    "func_80087D70": "osPiStartDma_recomp",   # game osPiStartDma -> bypass dead PI manager
+    "func_80087D70": "swe1r_osPiStartDma_recomp",   # game osPiStartDma -> logged wrapper over librecomp's synchronous DMA (bypasses the dead PI manager)
     # osPiReadIo(devAddr, u32* data): the recompiled body spins on PI_STATUS and
     # reads the cart through 0xB0000000 (unmapped). librecomp has no osPiReadIo
     # wrapper (only osEPiReadIo, which takes a handle), so the host implements it.
@@ -41,6 +41,10 @@ EXTRA_DECLS = [
     "swe1r_osSetEventMesg_recomp",
     "swe1r_osPiReadIo_recomp",
     "swe1r_osViBlack_recomp",
+    "swe1r_osPiStartDma_recomp",
+    "swe1r_osSpTaskYield_recomp",
+    "swe1r_osSpTaskYielded_recomp",
+    "swe1r_osViSetSpecialFeatures_recomp",
 ]
 
 # Call-site rewrites: callee name -> replacement, applied to every call in the
@@ -56,9 +60,18 @@ EXTRA_DECLS = [
 # - osViBlack: the game only ever calls osViBlack(1) (hardware clears the flag
 #   on the next VI swap); ultramodern keeps it until osViBlack(0). The host
 #   wrapper applies one-shot semantics.
+# - osSpTaskYield / osSpTaskYielded: librecomp ignores yields and always answers
+#   "not yielded". This game's SP scheduler requests a yield whenever an audio
+#   task is in flight at frame start and only clears its "audio pending" flag
+#   when the task reports yielded; with instant audio tasks that never happens
+#   and the next frame waits forever. The host wrappers answer "yielded" after
+#   a yield request so the game resumes the task later instead of deadlocking.
 CALL_REWRITES = {
     "osSetEventMesg_recomp": "swe1r_osSetEventMesg_recomp",
     "osViBlack_recomp": "swe1r_osViBlack_recomp",
+    "osSpTaskYield_recomp": "swe1r_osSpTaskYield_recomp",
+    "osSpTaskYielded_recomp": "swe1r_osSpTaskYielded_recomp",
+    "osViSetSpecialFeatures_recomp": "swe1r_osViSetSpecialFeatures_recomp",
 }
 
 def add_missing_decls():
