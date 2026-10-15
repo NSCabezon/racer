@@ -52,26 +52,42 @@ No existing N64 decompilation exists for this game. We're flying blind through B
 | **macOS / Apple Silicon Build (clang + Metal)** | **COMPLETE** |
 | **Thread Scheduling Without Runtime Patches** | **COMPLETE** |
 | **KSEG1 / MMIO Address Windows** | **COMPLETE** |
-| **RT64 Renderer Integration** | **IN PROGRESS** |
-| Visible Frame Output | IN PROGRESS |
+| **libultra VI / printf / PIO Identification** | **COMPLETE** |
+| **RT64 Renderer Integration** | **COMPLETE** |
+| **Visible Frame Output (intro renders)** | **COMPLETE** |
+| Clean Shutdown | TODO |
 | Audio Reimplementation | TODO |
 | Playable Build | THE DREAM |
 
-**Current Progress: Phase 8 - Native on Apple Silicon, Same Spine, One Crash Further**
+**Current Progress: Phase 8 - Native on Apple Silicon, and the first pixels**
 
 *"Great, kid. Don't get cocky."*
 
-The whole pipeline now builds and runs **natively on macOS / Apple Silicon** with clang, SDL2 from Homebrew and RT64's **Metal** backend, against upstream N64Recomp / N64ModernRuntime / RT64 (no runtime patches). The game boots to the same point it reached on Windows — threads, events, SI, RSP audio tasks, **display lists reaching RT64** — and then one step further: the first asset-loading crash on Windows was a read through a KSEG1 (uncached) RDRAM pointer, which we now alias; the next one is a NULL buffer inside the ROM asset reader (`func_80093180` via `dma_read_rom`), which is where the hunt continues.
+The whole pipeline now builds and runs **natively on macOS / Apple Silicon** with clang, SDL2 from Homebrew and RT64's **Metal** backend, against upstream N64Recomp / N64ModernRuntime / RT64 (no runtime patches). The game boots, runs its legal screen, reads its ROM file table, loads the intro and **draws it on screen** — the first image this project has ever produced on any platform. It then runs stably until you quit.
 
-Things that had to be rediscovered because they lived as uncommitted patches on the old Windows box (see `src/main.cpp` and `tools/post_recomp_patches.py` for the self-contained versions):
+Things that had to be rediscovered because they lived as uncommitted patches on the old Windows box, plus what was found on the way to the first frame (see `src/main.cpp`, `tools/post_recomp_patches.py`, `symbols.toml`):
 
 - **`osSetEventMesg(OS_EVENT_VI)` → `osViSetEvent`**: ultramodern's `osSetEventMesg` only records SP/DP/AI/SI, and its VI thread only delivers to the queue set via `osViSetEvent`. Call sites are rewritten to `swe1r_osSetEventMesg_recomp`, which forwards VI and passes the rest through.
 - **VI warm-up before `start_game`**: ultramodern only swaps its double-buffered VI state once a VI mode exists, and before the game starts only the dummy-VI path sets one. Starting the game immediately from `gfx_init_callback` meant the VI manager's queue never became current. We now wait four retraces on a helper thread.
 - **`osSetThreadPri` identified (0x8008BFB0)**: the init thread calls `osSetThreadPri(NULL, 0)` right before its idle loop. Unidentified, it stayed at priority 10, equal to the game thread, and ultramodern's scheduler only yields to strictly higher priority — the game thread never ran. This is what the old "pause_self yields to equal-priority threads" runtime patch was papering over.
 - **MMIO window**: the boot trampoline pokes `VI_H_START` through `0xA4400024`. librecomp protects everything above 512 MB, so `on_game_init` unprotects `0xA3F00000-0xA4FFFFFF` as zero-filled scratch.
 - **KSEG1 RDRAM mirror**: DMA buffers are addressed through `0xA0000000 | phys`. On macOS the 8 MB of RDRAM are re-mapped at the KSEG1 offset with `mach_vm_remap` (shared pages). Windows/Linux equivalents are TODO.
+- **The printf family was stubbed**: `dma_read_rom` (0x8008A6B4) is actually `sprintf`, `func_80093180` is `_Printf`, and `_Putfld` / `_Litob` / `_Genld` / `_Ldtob` / `lldiv` / `ldiv` (0x80092B10, 0x80096BF0, 0x80096E90, 0x80097400, 0x80097E60, 0x80097F60) were in the stub list, so every `%s` on the legal screen copied from an unfilled field struct. Un-stubbed, with corrected boundaries (0x80097950 is `__osSiDeviceBusy`, 0x80097FF0-0x80098400 is RSP boot microcode, not code).
+- **Small ROM reads are PIO, not DMA**: `func_80011BDC` reads the file table and asset headers one word at a time through `osPiReadIo` (0x8008A710, previously part of a 0x5C8-byte mis-bounded symbol). librecomp only has the handle-based `osEPiReadIo`, so `swe1r_osPiReadIo_recomp` serves the word from the ROM image. Big reads go through `osPiStartDma` as before.
+- **Real VI functions found and wired**: `osViSetMode` is 0x8008A2F0 (the old entry at 0x8008D510 was a thread-creation wrapper), `osViSwapBuffer` 0x8008A360, `osViBlack` 0x8008A3B0, `osViGetCurrentFramebuffer` 0x8008C770 (was stubbed), `osJamMesg` 0x8008C7B0 (was stubbed). Until these were routed to ultramodern, RT64 kept presenting its dummy framebuffer.
+- **`osViBlack` is one-shot on hardware**: the game only ever calls `osViBlack(1)` (at boot and on scene changes) and relies on `__osViSwapContext` clearing the flag at the next retrace. ultramodern keeps `VI_STATE_BLACK` until an explicit `osViBlack(0)`, which left the window black forever. `swe1r_osViBlack_recomp` applies the black and clears it two retraces later. This was the last piece between "display lists reach RT64" and pixels.
+- **19 function-pointer targets without symbols** (`Failed to find function at ...`): addresses referenced from `lui/addiu` pairs or data tables that started inside another symbol. Found by scanning the ROM for such references preceded by a `jr ra`, and split automatically (the libultra-region ones are stubbed).
 - **Implicit declarations**: `__osSiRawStartDma` is in N64Recomp's `ignored_funcs`, so callers reference `__osSiRawStartDma_recomp` with no prototype; MSVC tolerated it, clang does not. `post_recomp_patches.py` appends the missing prototypes to `funcs.h`.
 - **Runtime API drift** (upstream vs. the May 2026 code): `recomp::start_game` takes a game-mode id, `GameEntry::display_name` is mandatory, `RendererContext::send_dummy_workload` is a new pure virtual, and the Apple `WindowHandle` is `{NSWindow*, CAMetalLayer*}`.
+
+**Known issues / next steps**
+
+- **Quitting crashes**: ESC (or SIGTERM) runs `ultramodern::quit`, the render context shuts down, and RT64's `RenderTargetManager` / a game thread then touches freed state (`SIGSEGV` in `RT64::RenderTargetManager::get` or at a low RDRAM address). Cosmetic for now; needs an orderly shutdown (stop the game threads before tearing down the renderer).
+- **Audio**: RSP audio tasks are still no-op'd (`get_rsp_microcode` returns a microcode that reports `Broke`). Next: recompile the game's audio microcode with RSPRecomp, as other N64Recomp ports do.
+- **Controller**: `__osSiRawStartDma` synthesizes a single standard pad; keyboard mapping is in `get_input`. Rumble/pak unsupported.
+- **The `on_game_init` hacks** (PI handle at 0x800A7BC0 / 0x800A7FC0, fake VI context at 0x800A7F00) predate the VI fixes. 0x800A7BC0 is read by `osSetThreadPri` as `__osRunningThread`; revisit whether these writes are still needed now that the real VI functions are routed.
+- **Windows build**: the Win32 paths are preserved under `#if defined(_WIN32)` but have not been compiled since the macOS port; the KSEG1 mirror needs a `MapViewOfFile` equivalent there.
+- Handy scratch tools used for this phase (not in the repo): an `xref`/`dis` helper over `baserom.z64` + `symbols.toml`, and a scanner for function-pointer targets lacking symbols. Worth promoting into `tools/` next session.
 
 ---
 

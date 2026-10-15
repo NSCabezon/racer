@@ -27,6 +27,10 @@ MARKER = "@post-recomp-redirect"
 # func name -> ultramodern reimplementation to call instead
 REDIRECTS = {
     "func_80087D70": "osPiStartDma_recomp",   # game osPiStartDma -> bypass dead PI manager
+    # osPiReadIo(devAddr, u32* data): the recompiled body spins on PI_STATUS and
+    # reads the cart through 0xB0000000 (unmapped). librecomp has no osPiReadIo
+    # wrapper (only osEPiReadIo, which takes a handle), so the host implements it.
+    "osPiReadIo_8008A710": "swe1r_osPiReadIo_recomp",
 }
 
 # Functions N64Recomp renames to *_recomp (ignored_funcs list) but never
@@ -35,6 +39,8 @@ REDIRECTS = {
 EXTRA_DECLS = [
     "__osSiRawStartDma_recomp",
     "swe1r_osSetEventMesg_recomp",
+    "swe1r_osPiReadIo_recomp",
+    "swe1r_osViBlack_recomp",
 ]
 
 # Call-site rewrites: callee name -> replacement, applied to every call in the
@@ -47,8 +53,12 @@ EXTRA_DECLS = [
 #   runtime's VI thread only delivers to the queue set via osViSetEvent, so
 #   the scheduler would block forever in osRecvMesg. swe1r_osSetEventMesg_recomp
 #   (src/main.cpp) forwards VI to osViSetEvent and passes the rest through.
+# - osViBlack: the game only ever calls osViBlack(1) (hardware clears the flag
+#   on the next VI swap); ultramodern keeps it until osViBlack(0). The host
+#   wrapper applies one-shot semantics.
 CALL_REWRITES = {
     "osSetEventMesg_recomp": "swe1r_osSetEventMesg_recomp",
+    "osViBlack_recomp": "swe1r_osViBlack_recomp",
 }
 
 def add_missing_decls():

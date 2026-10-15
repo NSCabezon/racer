@@ -27,6 +27,9 @@ unpaired_lo16_warnings = false
 
 # Stub all libultra OS functions (0x8008C000+) and cache management functions.
 # These will be reimplemented by N64ModernRuntime (ultramodern).
+# NOT stubbed (plain C libultra, needed by the game): the printf family
+# (_Printf 0x80093180, _Putfld 0x80092B10, _Litob 0x80096BF0, _Genld 0x80096E90,
+# _Ldtob 0x80097400, lldiv 0x80097E60, ldiv 0x80097F60).
 stubs = [
     "func_800879C4",
     "static_0_80087CC0",
@@ -41,9 +44,8 @@ stubs = [
     "func_8008C280",
     # func_8008C390 split: tail portion still stubbed
     "func_8008C390_tail",
-    # osRecvMesg, osSendMesg, osGetCount: handled by N64Recomp reimplemented_funcs
-    "func_8008C770",
-    "func_8008C7B0",
+    # osRecvMesg, osGetCount: handled by N64Recomp reimplemented_funcs
+    # 0x8008C770 = osViGetCurrentFramebuffer, 0x8008C7B0 = osJamMesg: reimplemented, not stubbed
     # func_8008C930 split: exception handler still stubbed
     "func_8008C930_exception",
     # __osDisableInt, __osRestoreInt: handled by N64Recomp reimplemented_funcs
@@ -107,7 +109,6 @@ stubs = [
     "func_80092560",
     "func_800926A0",
     "func_800928F0",
-    "func_80092B10",
     "pi_create_access_queue",
     "pi_rel_access",
     "pi_read_io",
@@ -141,9 +142,6 @@ stubs = [
     "func_80096790",
     "func_80096930",
     "func_80096A08",
-    "func_80096BF0",
-    "func_80096E90",
-    "func_80097400",
     "osPiRaw_io",
     "pi_raw_start_dma",
     "osPiManager_candidate_800979F8",
@@ -151,8 +149,15 @@ stubs = [
     "func_80097D20",
     "func_80097D70",
     "func_80097DC0",
-    "func_80097E60",
-    "func_80097F68",
+    "rspboot_80097FF0",
+    # Auto-split thread entry points / handlers in the libultra region (hardware code, stubbed)
+    "func_8008CB00",
+    "func_8008DD50",
+    "func_8008E9F0",
+    "func_8008F950",
+    "func_8008FA60",
+    "func_80096158",
+    "func_800963B4",
     "libultra_split_8008D12C",
     "libultra_split_8008D284",
     "libultra_split_8008D450",

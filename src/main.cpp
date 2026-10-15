@@ -145,6 +145,38 @@ extern "C" void swe1r_osSetEventMesg_recomp(uint8_t* rdram, recomp_context* ctx)
     osSetEventMesg(rdram, event, mq, msg);
 }
 
+// osPiReadIo(devAddr, u32* data): single-word PIO read from the cartridge. The
+// game reads its file table and asset headers this way (tools: func_80011BDC
+// loops over osPiReadIo per word for reads below 4 bytes alignment, and
+// read_rom chunks of up to 2 KB go through osPiStartDma). librecomp only
+// provides osEPiReadIo (handle-based), so we serve the word straight from the
+// ROM image. Call sites are redirected here by tools/post_recomp_patches.py.
+//
+//   a0 = cart offset (0x0141E200 style; may or may not carry the 0x10000000 base)
+//   a1 = destination pointer (RDRAM)
+extern "C" void swe1r_osPiReadIo_recomp(uint8_t* rdram, recomp_context* ctx) {
+    uint32_t dev_addr = (uint32_t)ctx->r4;
+    uint32_t dst      = (uint32_t)ctx->r5;
+    uint32_t phys     = (dev_addr & 0x1FFFFFFFu) | recomp::rom_base; // 0x10000000 cart base
+    uint32_t offset   = phys - recomp::rom_base;
+
+    auto rom = recomp::get_rom();
+    uint32_t value = 0;
+    if (offset + 4 <= rom.size()) {
+        value = (uint32_t)rom[offset] << 24 | (uint32_t)rom[offset + 1] << 16 |
+                (uint32_t)rom[offset + 2] << 8 | (uint32_t)rom[offset + 3];
+    } else {
+        fprintf(stderr, "[pi] osPiReadIo out of ROM: dev=0x%08X\n", dev_addr);
+    }
+    MEM_W(0, (gpr)(int32_t)dst) = value;
+
+    static uint32_t count = 0;
+    if (++count <= 8) {
+        printf("[pi] osPiReadIo(0x%08X) -> 0x%08X @ 0x%08X\n", dev_addr, value, dst);
+    }
+    ctx->r2 = 0;
+}
+
 // =============================================================================
 // ROM Hash: Star Wars Episode I: Racer (US)
 // CRC1: 0x72F70398  CRC2: 0x6556A98B
@@ -334,11 +366,38 @@ ultramodern::input::connected_device_info_t get_connected_device_info(int contro
 // state, so if we start the game before a couple of dummy retraces have run,
 // that state never becomes current and the VI manager blocks forever in
 // osRecvMesg. We therefore hold start_game until a few retraces have passed.
+
+// osViBlack(active): the game calls osViBlack(1) at boot (func_8002F550) and
+// again on scene changes (func_80039D34), and never osViBlack(0). On hardware
+// VI_STATE_BLACK is consumed by __osViSwapContext at the next retrace, so the
+// screen only stays black for one frame. ultramodern keeps the flag set until
+// an explicit osViBlack(0), which left the window black forever. We emulate
+// the one-shot semantics: apply the black, then clear it two retraces later
+// from the VI thread. Call sites are rewritten to this function by
+// tools/post_recomp_patches.py.
 static std::atomic<uint32_t> g_vi_count{0};
+static std::atomic<uint32_t> g_unblack_at{0};
+
+extern "C" void swe1r_osViBlack_recomp(uint8_t* rdram, recomp_context* ctx) {
+    uint8_t active = (uint8_t)ctx->r4;
+    osViBlack(active);
+    if (active) {
+        g_unblack_at.store(g_vi_count.load(std::memory_order_relaxed) + 2, std::memory_order_relaxed);
+    } else {
+        g_unblack_at.store(0, std::memory_order_relaxed);
+    }
+    ctx->r2 = 0;
+}
 
 void vi_callback() {
     // Called every VI interrupt
-    g_vi_count.fetch_add(1, std::memory_order_relaxed);
+    uint32_t n = g_vi_count.fetch_add(1, std::memory_order_relaxed) + 1;
+
+    uint32_t target = g_unblack_at.load(std::memory_order_relaxed);
+    if (target != 0 && n >= target) {
+        g_unblack_at.store(0, std::memory_order_relaxed);
+        osViBlack(0);
+    }
 }
 
 void gfx_init_callback() {

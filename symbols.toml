@@ -292,7 +292,13 @@ size = 0x98000
   [[section.functions]]
   name = "func_80007594"
   vram = 0x80007594
-  size = 0x194
+  size = 0x17C
+
+  [[section.functions]]
+  # Auto-split: referenced as a function pointer; starts with a prologue after jr ra.
+  name = "func_80007710"
+  vram = 0x80007710
+  size = 0x18
 
   [[section.functions]]
   name = "func_80007728"
@@ -2006,12 +2012,13 @@ size = 0x98000
   [[section.functions]]
   name = "func_80044370"
   vram = 0x80044370
-  size = 0xAC
+  size = 0xA4
 
   [[section.functions]]
-  name = "func_8004441C"
-  vram = 0x8004441C
-  size = 0x94
+  # Called through a function pointer; the old func_8004441C started 8 bytes into it.
+  name = "func_80044414"
+  vram = 0x80044414
+  size = 0x9C
 
   [[section.functions]]
   name = "func_800444B0"
@@ -2026,7 +2033,13 @@ size = 0x98000
   [[section.functions]]
   name = "func_80045004"
   vram = 0x80045004
-  size = 0x310
+  size = 0x140
+
+  [[section.functions]]
+  # Auto-split: referenced as a function pointer; starts with a prologue after jr ra.
+  name = "func_80045144"
+  vram = 0x80045144
+  size = 0x1D0
 
   [[section.functions]]
   name = "func_80045314"
@@ -2391,7 +2404,13 @@ size = 0x98000
   [[section.functions]]
   name = "func_80053300"
   vram = 0x80053300
-  size = 0x84
+  size = 0x7C
+
+  [[section.functions]]
+  # Auto-split: referenced as a function pointer; starts with a prologue after jr ra.
+  name = "func_8005337C"
+  vram = 0x8005337C
+  size = 0x8
 
   [[section.functions]]
   name = "func_80053384"
@@ -2456,7 +2475,13 @@ size = 0x98000
   [[section.functions]]
   name = "func_8005C210"
   vram = 0x8005C210
-  size = 0x9C8
+  size = 0x15C
+
+  [[section.functions]]
+  # Auto-split: referenced as a function pointer; starts with a prologue after jr ra.
+  name = "func_8005C36C"
+  vram = 0x8005C36C
+  size = 0x86C
 
   [[section.functions]]
   # Split from func_8005C210: 0x8005CBD8 is a real function (prologue
@@ -2569,12 +2594,24 @@ size = 0x98000
   [[section.functions]]
   name = "func_80060DE4"
   vram = 0x80060DE4
-  size = 0x1490
+  size = 0x148C
+
+  [[section.functions]]
+  # Auto-split: referenced as a function pointer; starts with a prologue after jr ra.
+  name = "func_80062270"
+  vram = 0x80062270
+  size = 0x4
 
   [[section.functions]]
   name = "func_80062274"
   vram = 0x80062274
-  size = 0xA0C
+  size = 0xA04
+
+  [[section.functions]]
+  # Auto-split: referenced as a function pointer; starts with a prologue after jr ra.
+  name = "func_80062C78"
+  vram = 0x80062C78
+  size = 0x8
 
   [[section.functions]]
   name = "func_80062C80"
@@ -2654,7 +2691,19 @@ size = 0x98000
   [[section.functions]]
   name = "func_80064F1C"
   vram = 0x80064F1C
-  size = 0x774
+  size = 0x150
+
+  [[section.functions]]
+  # Auto-split: referenced as a function pointer; starts with a prologue after jr ra.
+  name = "func_8006506C"
+  vram = 0x8006506C
+  size = 0x8
+
+  [[section.functions]]
+  # Auto-split: referenced as a function pointer; starts with a prologue after jr ra.
+  name = "func_80065074"
+  vram = 0x80065074
+  size = 0x61C
 
   [[section.functions]]
   name = "func_80065690"
@@ -2874,7 +2923,13 @@ size = 0x98000
   [[section.functions]]
   name = "func_8006FDE4"
   vram = 0x8006FDE4
-  size = 0x5BC
+  size = 0x104
+
+  [[section.functions]]
+  # Auto-split: referenced as a function pointer; starts with a prologue after jr ra.
+  name = "func_8006FEE8"
+  vram = 0x8006FEE8
+  size = 0x4B8
 
   [[section.functions]]
   name = "func_800703A0"
@@ -3019,7 +3074,13 @@ size = 0x98000
   [[section.functions]]
   name = "func_8007ACEC"
   vram = 0x8007ACEC
-  size = 0x2FC
+  size = 0x2F4
+
+  [[section.functions]]
+  # Auto-split: referenced as a function pointer; starts with a prologue after jr ra.
+  name = "func_8007AFE0"
+  vram = 0x8007AFE0
+  size = 0x8
 
   [[section.functions]]
   name = "func_8007AFE8"
@@ -3094,7 +3155,13 @@ size = 0x98000
   [[section.functions]]
   name = "func_8007C074"
   vram = 0x8007C074
-  size = 0x350
+  size = 0x348
+
+  [[section.functions]]
+  # Auto-split: referenced as a function pointer; starts with a prologue after jr ra.
+  name = "func_8007C3BC"
+  vram = 0x8007C3BC
+  size = 0x8
 
   [[section.functions]]
   name = "func_8007C3C4"
@@ -3581,7 +3648,13 @@ size = 0x98000
   [[section.functions]]
   name = "func_80088B70"
   vram = 0x80088B70
-  size = 0x5D4
+  size = 0x8C
+
+  [[section.functions]]
+  # Auto-split: referenced as a function pointer; starts with a prologue after jr ra.
+  name = "func_80088BFC"
+  vram = 0x80088BFC
+  size = 0x548
 
   [[section.functions]]
   name = "func_80089144"
@@ -3667,19 +3740,29 @@ size = 0x98000
   size = 0x4A0
 
   [[section.functions]]
-  name = "func_8008A2F0"
+  # osViSetMode: __osViNext->modep = mode, state = VI_STATE_MODE_UPDATED, control = mode->comRegs.ctrl.
+  # (0x8008D510 was previously mislabelled osViSetMode; it is a thread-creation wrapper.)
+  name = "osViSetMode"
   vram = 0x8008A2F0
   size = 0x70
 
   [[section.functions]]
-  name = "func_8008A360"
+  # osViSwapBuffer: __osViNext->framep = fb, state |= VI_STATE_BUFFER_UPDATED.
+  name = "osViSwapBuffer"
   vram = 0x8008A360
   size = 0x50
 
   [[section.functions]]
-  name = "func_8008A3B0"
+  # osViBlack: sets/clears VI_STATE_BLACK (0x20) in __osViNext->state.
+  name = "osViBlack"
   vram = 0x8008A3B0
-  size = 0x248
+  size = 0x70
+
+  [[section.functions]]
+  # Split from the old func_8008A3B0 (0x248): separate function, calls 0x800926A0 / 0x80091FD0.
+  name = "func_8008A420"
+  vram = 0x8008A420
+  size = 0x1D8
 
   [[section.functions]]
   name = "func_8008A5F8"
@@ -3692,14 +3775,24 @@ size = 0x98000
   size = 0x24
 
   [[section.functions]]
+  # Actually sprintf(buf, fmt, ...): calls _Printf then writes the terminator. Name kept for history.
   name = "dma_read_rom"
   vram = 0x8008A6B4
   size = 0x5C
 
   [[section.functions]]
-  name = "func_8008A710"
+  # osPiReadIo(devAddr, u32* data): __osPiGetAccess, __osPiRawReadIo, __osPiRelAccess.
+  # Redirected to swe1r_osPiReadIo_recomp (src/main.cpp) by tools/post_recomp_patches.py:
+  # the game's small ROM reads (file table, headers) go through PIO, not DMA.
+  name = "osPiReadIo_8008A710"
   vram = 0x8008A710
-  size = 0x5C8
+  size = 0x40
+
+  [[section.functions]]
+  # Split from the old func_8008A710 (0x5C8): float math starts here.
+  name = "func_8008A750"
+  vram = 0x8008A750
+  size = 0x588
 
   [[section.functions]]
   name = "func_8008ACD8"
@@ -3851,14 +3944,22 @@ size = 0x98000
   size = 0x210
 
   [[section.functions]]
-  name = "func_8008C770"
+  # osViGetCurrentFramebuffer: returns __osViCurr->framep.
+  name = "osViGetCurrentFramebuffer"
   vram = 0x8008C770
   size = 0x40
 
   [[section.functions]]
-  name = "func_8008C7B0"
+  # osJamMesg: inserts at the front, first = (first + msgCount - 1) % msgCount; blocks on fullqueue.
+  name = "osJamMesg"
   vram = 0x8008C7B0
-  size = 0x180
+  size = 0x150
+
+  [[section.functions]]
+  # Split from the old func_8008C7B0: returns *0x800A7B88 when *0x800A7B80 != 0. Plain C.
+  name = "func_8008C900"
+  vram = 0x8008C900
+  size = 0x30
 
   [[section.functions]]
   # Split: exception handler (0x150) + __osDisableInt (0x20) + __osRestoreInt (0x28)
@@ -3879,7 +3980,13 @@ size = 0x98000
   [[section.functions]]
   name = "func_8008CAC8"
   vram = 0x8008CAC8
-  size = 0x664
+  size = 0x38
+
+  [[section.functions]]
+  # Auto-split: referenced as a function pointer; starts with a prologue after jr ra.
+  name = "func_8008CB00"
+  vram = 0x8008CB00
+  size = 0x62C
 
   # Auto-split from func_8008CAC8 to prevent static_0_ detection
   [[section.functions]]
@@ -3905,7 +4012,8 @@ size = 0x98000
   size = 0xC0
 
   [[section.functions]]
-  name = "osViSetMode"
+  # Not osViSetMode (misidentified earlier): creates a thread/task with entry 0x8008DD80, id 7.
+  name = "func_8008D510"
   vram = 0x8008D510
   size = 0x44
 
@@ -3942,7 +4050,13 @@ size = 0x98000
   [[section.functions]]
   name = "func_8008DCB0"
   vram = 0x8008DCB0
-  size = 0xD0
+  size = 0xA0
+
+  [[section.functions]]
+  # Auto-split: referenced as a function pointer; starts with a prologue after jr ra.
+  name = "func_8008DD50"
+  vram = 0x8008DD50
+  size = 0x30
 
   [[section.functions]]
   name = "func_8008DD80"
@@ -3967,7 +4081,13 @@ size = 0x98000
   [[section.functions]]
   name = "func_8008E54C"
   vram = 0x8008E54C
-  size = 0x4A8
+  size = 0x4A4
+
+  [[section.functions]]
+  # Auto-split: referenced as a function pointer; starts with a prologue after jr ra.
+  name = "func_8008E9F0"
+  vram = 0x8008E9F0
+  size = 0x4
 
   [[section.functions]]
   # Split: jr ra stub (0x10) + osSetEventMesg (0xD8)
@@ -4004,12 +4124,24 @@ size = 0x98000
   [[section.functions]]
   name = "func_8008F3FC"
   vram = 0x8008F3FC
-  size = 0x584
+  size = 0x554
+
+  [[section.functions]]
+  # Auto-split: referenced as a function pointer; starts with a prologue after jr ra.
+  name = "func_8008F950"
+  vram = 0x8008F950
+  size = 0x30
 
   [[section.functions]]
   name = "func_8008F980"
   vram = 0x8008F980
-  size = 0x114
+  size = 0xE0
+
+  [[section.functions]]
+  # Auto-split: referenced as a function pointer; starts with a prologue after jr ra.
+  name = "func_8008FA60"
+  vram = 0x8008FA60
+  size = 0x34
 
   [[section.functions]]
   name = "func_8008FA94"
@@ -4194,11 +4326,13 @@ size = 0x98000
   size = 0x220
 
   [[section.functions]]
+  # _Putfld (libultra printf field formatter). Plain C; jump table at 0x800AE034.
   name = "func_80092B10"
   vram = 0x80092B10
   size = 0x670
 
   [[section.functions]]
+  # _Printf (libultra formatting core); called by sprintf (dma_read_rom).
   name = "func_80093180"
   vram = 0x80093180
   size = 0x650
@@ -4364,12 +4498,24 @@ size = 0x98000
   [[section.functions]]
   name = "func_80095F34"
   vram = 0x80095F34
-  size = 0x228
+  size = 0x224
+
+  [[section.functions]]
+  # Auto-split: referenced as a function pointer; starts with a prologue after jr ra.
+  name = "func_80096158"
+  vram = 0x80096158
+  size = 0x4
 
   [[section.functions]]
   name = "func_8009615C"
   vram = 0x8009615C
-  size = 0x270
+  size = 0x258
+
+  [[section.functions]]
+  # Auto-split: referenced as a function pointer; starts with a prologue after jr ra.
+  name = "func_800963B4"
+  vram = 0x800963B4
+  size = 0x18
 
   [[section.functions]]
   name = "func_800963CC"
@@ -4392,24 +4538,28 @@ size = 0x98000
   size = 0x1E8
 
   [[section.functions]]
+  # _Litob (integer formatting). Plain C.
   name = "func_80096BF0"
   vram = 0x80096BF0
   size = 0x2A0
 
   [[section.functions]]
+  # _Genld (float digit generation). Plain C.
   name = "func_80096E90"
   vram = 0x80096E90
   size = 0x570
 
   [[section.functions]]
+  # _Ldtob (libultra printf float formatting). Plain C, no hardware access.
   name = "func_80097400"
   vram = 0x80097400
-  size = 0x558
+  size = 0x550
 
   [[section.functions]]
+  # Reads SI_STATUS (0xA4800018); real start is 0x80097950.
   name = "osPiRaw_io"
-  vram = 0x80097958
-  size = 0x38
+  vram = 0x80097950
+  size = 0x40
 
   [[section.functions]]
   name = "pi_raw_start_dma"
@@ -4442,11 +4592,19 @@ size = 0x98000
   size = 0xA0
 
   [[section.functions]]
+  # lldiv (plain C). Not named "lldiv": gen_lookup_table.py would resolve the host libc symbol.
   name = "func_80097E60"
   vram = 0x80097E60
-  size = 0x108
+  size = 0x100
 
   [[section.functions]]
-  name = "func_80097F68"
-  vram = 0x80097F68
-  size = 0x498
+  # ldiv (0x80097F60-0x80097FE4) plus padding up to the RSP boot microcode.
+  name = "ldiv_80097F60"
+  vram = 0x80097F60
+  size = 0x90
+
+  [[section.functions]]
+  # RSP boot microcode (data, not CPU code). Stubbed.
+  name = "rspboot_80097FF0"
+  vram = 0x80097FF0
+  size = 0x410
