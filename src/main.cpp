@@ -13,10 +13,26 @@
 #include <algorithm>
 #include <fstream>
 #include <sstream>
+#include <atomic>
+#include <chrono>
+#include <thread>
 
+#if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <dbghelp.h>
+#else
+#include <csignal>
+#include <cinttypes>
+#include <execinfo.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#endif
+#if defined(__APPLE__)
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#include <mach/mach_error.h>
+#endif
 
 #include <SDL.h>
 #include <SDL_syswm.h>
@@ -104,6 +120,31 @@ extern "C" void __osSiRawStartDma_recomp(uint8_t* rdram, recomp_context* ctx) {
     ctx->r2 = 0; // success
 }
 
+// osSetEventMesg: the game registers every interrupt queue through this call,
+// including OS_EVENT_VI. ultramodern's osSetEventMesg only records SP/DP/AI/SI
+// and its VI thread delivers retraces solely to the queue set via osViSetEvent,
+// so without this forwarder the scheduler (func_8008BC30) blocks forever in
+// osRecvMesg waiting for a retrace that never arrives. Call sites are rewritten
+// to this function by tools/post_recomp_patches.py.
+//
+//   a0 = event id, a1 = message queue, a2 = message
+extern "C" void swe1r_osSetEventMesg_recomp(uint8_t* rdram, recomp_context* ctx) {
+    OSEvent  event = (OSEvent)ctx->r4;
+    int32_t  mq    = (int32_t)ctx->r5;
+    OSMesg   msg   = (OSMesg)ctx->r6;
+
+    if (event == OS_EVENT_VI) {
+        printf("[events] osSetEventMesg(VI) -> osViSetEvent(mq=0x%08X, msg=0x%08X, retrace=1)\n",
+               (uint32_t)mq, (uint32_t)msg);
+        osViSetEvent(rdram, mq, msg, 1);
+        return;
+    }
+
+    printf("[events] osSetEventMesg(event=%u, mq=0x%08X, msg=0x%08X)\n",
+           (unsigned)event, (uint32_t)mq, (uint32_t)msg);
+    osSetEventMesg(rdram, event, mq, msg);
+}
+
 // =============================================================================
 // ROM Hash: Star Wars Episode I: Racer (US)
 // CRC1: 0x72F70398  CRC2: 0x6556A98B
@@ -155,7 +196,9 @@ std::unique_ptr<ultramodern::renderer::RendererContext> create_render_context_ca
 // =============================================================================
 
 ultramodern::gfx_callbacks_t::gfx_data_t create_gfx() {
+#if defined(_WIN32)
     SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
+#endif
     SDL_SetHint(SDL_HINT_GAMECONTROLLER_USE_BUTTON_LABELS, "0");
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_AUDIO) < 0) {
@@ -168,11 +211,17 @@ ultramodern::gfx_callbacks_t::gfx_data_t create_gfx() {
 }
 
 ultramodern::renderer::WindowHandle create_window(ultramodern::gfx_callbacks_t::gfx_data_t) {
+    uint32_t window_flags = SDL_WINDOW_RESIZABLE;
+#if defined(__APPLE__)
+    // RT64's Metal backend renders into a CAMetalLayer owned by an SDL Metal view.
+    window_flags |= SDL_WINDOW_METAL;
+#endif
+
     g_window = SDL_CreateWindow(
         "Star Wars Episode I: Racer",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         1280, 960,
-        SDL_WINDOW_RESIZABLE
+        window_flags
     );
 
     if (!g_window) {
@@ -187,10 +236,26 @@ ultramodern::renderer::WindowHandle create_window(ultramodern::gfx_callbacks_t::
     SDL_VERSION(&wminfo.version);
     SDL_GetWindowWMInfo(g_window, &wminfo);
 
+#if defined(_WIN32)
     ultramodern::renderer::WindowHandle handle{};
     handle.window = wminfo.info.win.window;
     handle.thread_id = GetCurrentThreadId();
     return handle;
+#elif defined(__APPLE__)
+    // Hand RT64 the NSWindow plus the CAMetalLayer backing the SDL Metal view.
+    // The view is intentionally never destroyed: it must outlive the swap chain.
+    SDL_MetalView metal_view = SDL_Metal_CreateView(g_window);
+    if (!metal_view) {
+        fprintf(stderr, "Failed to create Metal view: %s\n", SDL_GetError());
+        std::exit(1);
+    }
+    ultramodern::renderer::WindowHandle handle{};
+    handle.window = wminfo.info.cocoa.window;
+    handle.view = SDL_Metal_GetLayer(metal_view);
+    return handle;
+#else
+#error "create_window: unsupported platform"
+#endif
 }
 
 void update_gfx(ultramodern::gfx_callbacks_t::gfx_data_t) {
@@ -262,8 +327,18 @@ ultramodern::input::connected_device_info_t get_connected_device_info(int contro
 // Event Callbacks
 // =============================================================================
 
+// Retraces seen so far. ultramodern's VI thread only swaps its double-buffered
+// ViState when the pending state has a VI mode, and before the game starts the
+// only thing that sets one is the thread's own dummy VI path. The game's VI
+// manager registers its retrace queue through osViSetEvent into the *pending*
+// state, so if we start the game before a couple of dummy retraces have run,
+// that state never becomes current and the VI manager blocks forever in
+// osRecvMesg. We therefore hold start_game until a few retraces have passed.
+static std::atomic<uint32_t> g_vi_count{0};
+
 void vi_callback() {
     // Called every VI interrupt
+    g_vi_count.fetch_add(1, std::memory_order_relaxed);
 }
 
 void gfx_init_callback() {
@@ -271,9 +346,21 @@ void gfx_init_callback() {
     // Start the game now that the renderer and VI thread are ready.
     // This must happen after start() has begun, not before, so the VI
     // thread gets a chance to set dummy VI state before is_game_started() is true.
-    std::u8string game_id = u8"swe1racer";
-    recomp::start_game(game_id);
-    printf("[SWE1R] Game started\n");
+    // The VI thread is spawned only after this callback returns, so the wait
+    // has to happen on a helper thread rather than here.
+    std::thread([]() {
+        constexpr uint32_t kWarmupRetraces = 4;
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (g_vi_count.load(std::memory_order_relaxed) < kWarmupRetraces &&
+               std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        printf("[SWE1R] VI warm-up done (%u retraces)\n", g_vi_count.load());
+        std::u8string game_id = u8"swe1racer";
+        // Second argument is the game-mode mod id; empty selects the base game.
+        recomp::start_game(game_id, std::string{});
+        printf("[SWE1R] Game started\n");
+    }).detach();
 }
 
 // =============================================================================
@@ -381,8 +468,57 @@ void on_game_init(uint8_t* rdram, recomp_context* ctx) {
     // it sits inside the cleared range and is populated by func_80039A38.
     write32(0x80000318, 0x00800000);
     printf("[SWE1R] osMemSize=0x800000 written at 0x80000318\n");
+
+    // The boot trampoline (0x80000480) and some libultra remnants poke the
+    // RCP hardware registers directly through KSEG1 (0xA3F00000-0xA4FFFFFF:
+    // RDRAM regs, SP, DPC, MI, VI, AI, PI, RI, SI). librecomp maps RDRAM as a
+    // 4 GB reservation that is only readable/writable for the first 512 MB,
+    // so those accesses land at rdram + 0x24400024 and fault. Open that window
+    // as plain zero-filled memory: writes are absorbed, reads return 0. The
+    // real register semantics are provided by the ultramodern reimplementations.
+    {
+        const size_t mmio_offset = 0xA3F00000u - 0x80000000u; // 0x23F00000
+        const size_t mmio_size   = 0x01100000u;               // up to 0xA5000000
+#if defined(_WIN32)
+        DWORD old_protect = 0;
+        if (!VirtualProtect(rdram + mmio_offset, mmio_size, PAGE_READWRITE, &old_protect)) {
+            fprintf(stderr, "[SWE1R] WARNING: could not unprotect MMIO window\n");
+        }
+#else
+        if (mprotect(rdram + mmio_offset, mmio_size, PROT_READ | PROT_WRITE) != 0) {
+            perror("[SWE1R] WARNING: could not unprotect MMIO window");
+        }
+#endif
+        printf("[SWE1R] MMIO window 0xA3F00000-0xA4FFFFFF mapped as scratch memory\n");
+    }
+
+    // KSEG1 mirror of RDRAM. The game addresses DMA buffers through uncached
+    // pointers (OS_K0_TO_K1, 0xA0000000 | phys), which the recomp translates to
+    // rdram + 0x20000000: beyond the 512 MB the runtime makes accessible, so
+    // every such access faults. On hardware KSEG0 and KSEG1 are the same RAM,
+    // so alias the 8 MB of RDRAM at the KSEG1 offset with shared pages: writes
+    // through either segment are visible through the other.
+#if defined(__APPLE__)
+    {
+        const mach_vm_size_t rdram_bytes = 0x00800000;            // 8 MB (Expansion Pak)
+        mach_vm_address_t    target      = (mach_vm_address_t)(uintptr_t)(rdram + 0x20000000u);
+        vm_prot_t cur_prot = 0, max_prot = 0;
+        kern_return_t kr = mach_vm_remap(mach_task_self(), &target, rdram_bytes, 0,
+                                         VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE,
+                                         mach_task_self(), (mach_vm_address_t)(uintptr_t)rdram,
+                                         FALSE, &cur_prot, &max_prot, VM_INHERIT_NONE);
+        if (kr == KERN_SUCCESS) {
+            printf("[SWE1R] KSEG1 RDRAM mirror mapped at 0xA0000000 (shared pages)\n");
+        } else {
+            fprintf(stderr, "[SWE1R] WARNING: KSEG1 RDRAM mirror failed: %s\n", mach_error_string(kr));
+        }
+    }
+#else
+    // TODO(win32/linux): alias with MapViewOfFile / memfd + mmap(MAP_FIXED).
+#endif
 }
 
+#if defined(_WIN32)
 // =============================================================================
 // Map-file symbolizer
 //
@@ -516,12 +652,71 @@ static LONG WINAPI crash_handler(EXCEPTION_POINTERS* ep) {
     return EXCEPTION_EXECUTE_HANDLER;
 }
 
+#else // !_WIN32
+
+// =============================================================================
+// POSIX crash handler (macOS / Linux)
+//
+// Mirrors the Win32 handler: prints the signal and fault address, translates
+// the fault back into an N64 address via g_rdram_base, then dumps a native
+// backtrace. backtrace_symbols_fd resolves names through dladdr, and the
+// recompiled func_XXXXXXXX functions are exported symbols, so they show up
+// without any map-file parsing. Kept malloc-free (fd-based symbolization).
+// =============================================================================
+static void posix_crash_handler(int sig, siginfo_t* info, void* /*ucontext*/) {
+    const char* sig_name = (sig == SIGSEGV) ? "SIGSEGV"
+                         : (sig == SIGBUS)  ? "SIGBUS"
+                         : "signal";
+    uintptr_t fault = info ? (uintptr_t)info->si_addr : 0;
+    fprintf(stderr, "\n[CRASH] %s (%d) code=%d at fault address 0x%p\n",
+            sig_name, sig, info ? info->si_code : 0, (void*)fault);
+
+    // Translate the fault back into an N64 address using the RDRAM base.
+    if (g_rdram_base) {
+        int64_t off = (int64_t)(fault - (uintptr_t)g_rdram_base);
+        // MEM_B uses XOR 3 byte-swizzling, so undo it for the printed addr.
+        uint32_t n64 = (uint32_t)(off + 0x80000000);
+        uint32_t n64_b = (uint32_t)((off ^ 3) + 0x80000000);
+        const char* tag = (off >= -0x10000 && off < 0x00900000)
+                          ? "in RDRAM" : "out of RDRAM";
+        fprintf(stderr, "[CRASH] rdram_base=%p offset=%+lld (%s)\n",
+                (void*)g_rdram_base, (long long)off, tag);
+        fprintf(stderr, "[CRASH] -> N64 word addr ~0x%08X  byte addr ~0x%08X\n",
+                n64, n64_b);
+    } else {
+        fprintf(stderr, "[CRASH] rdram_base not set yet\n");
+    }
+
+    fprintf(stderr, "[CRASH] Stack trace (native, via backtrace):\n");
+    void* frames[48];
+    int n = backtrace(frames, (int)(sizeof(frames) / sizeof(frames[0])));
+    backtrace_symbols_fd(frames, n, STDERR_FILENO);
+    fflush(stderr);
+    _exit(1);
+}
+
+static void install_posix_crash_handlers() {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_sigaction = posix_crash_handler;
+    sa.sa_flags = SA_SIGINFO | SA_RESETHAND;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGSEGV, &sa, nullptr);
+    sigaction(SIGBUS, &sa, nullptr);
+}
+
+#endif // _WIN32
+
 int main(int argc, char* argv[]) {
     // Force unbuffered output so we see prints before crashes
     setvbuf(stdout, nullptr, _IONBF, 0);
     setvbuf(stderr, nullptr, _IONBF, 0);
+#if defined(_WIN32)
     load_map_symbols();
     SetUnhandledExceptionFilter(crash_handler);
+#else
+    install_posix_crash_handlers();
+#endif
 
     fprintf(stderr, "[DEBUG] main() entered\n");
 
@@ -535,6 +730,7 @@ int main(int argc, char* argv[]) {
     recomp::GameEntry game_entry{};
     game_entry.rom_hash = SWE1R_ROM_HASH;
     game_entry.internal_name = "STAR WARS EP1 RACER";
+    game_entry.display_name = "Star Wars Episode I: Racer";
     game_entry.game_id = u8"swe1racer";
     game_entry.mod_game_id = "swe1racer";
     game_entry.save_type = recomp::SaveType::Eep4k;
@@ -568,6 +764,8 @@ int main(int argc, char* argv[]) {
 
     // Build the configuration
     recomp::Configuration cfg{};
+    cfg.argc = argc;
+    cfg.argv = argv;
     cfg.project_version = { 0, 1, 0, "-alpha" };
 
     // RSP callbacks

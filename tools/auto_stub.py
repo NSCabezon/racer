@@ -7,7 +7,8 @@ import subprocess
 import sys
 import re
 
-RECOMP_EXE = r"D:\recomp\n64\N64Recomp\build\Release\N64Recomp.exe"
+import os
+RECOMP_EXE = os.environ.get("N64RECOMP", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "..", "N64Recomp", "build", "N64Recomp"))
 TOML_PATH = "recomp.toml"
 MAX_ITERATIONS = 200
 

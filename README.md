@@ -49,12 +49,33 @@ No existing N64 decompilation exists for this game. We're flying blind through B
 | **PI DMA / Asset Loading** | **COMPLETE** |
 | **RSP Task Submission (audio + graphics)** | **COMPLETE** |
 | **Display Lists Reach RT64 (processed)** | **COMPLETE** |
+| **macOS / Apple Silicon Build (clang + Metal)** | **COMPLETE** |
+| **Thread Scheduling Without Runtime Patches** | **COMPLETE** |
+| **KSEG1 / MMIO Address Windows** | **COMPLETE** |
 | **RT64 Renderer Integration** | **IN PROGRESS** |
 | Visible Frame Output | IN PROGRESS |
 | Audio Reimplementation | TODO |
 | Playable Build | THE DREAM |
 
-**Current Progress: Phase 7 - Display Lists Are Reaching the Renderer**
+**Current Progress: Phase 8 - Native on Apple Silicon, Same Spine, One Crash Further**
+
+*"Great, kid. Don't get cocky."*
+
+The whole pipeline now builds and runs **natively on macOS / Apple Silicon** with clang, SDL2 from Homebrew and RT64's **Metal** backend, against upstream N64Recomp / N64ModernRuntime / RT64 (no runtime patches). The game boots to the same point it reached on Windows — threads, events, SI, RSP audio tasks, **display lists reaching RT64** — and then one step further: the first asset-loading crash on Windows was a read through a KSEG1 (uncached) RDRAM pointer, which we now alias; the next one is a NULL buffer inside the ROM asset reader (`func_80093180` via `dma_read_rom`), which is where the hunt continues.
+
+Things that had to be rediscovered because they lived as uncommitted patches on the old Windows box (see `src/main.cpp` and `tools/post_recomp_patches.py` for the self-contained versions):
+
+- **`osSetEventMesg(OS_EVENT_VI)` → `osViSetEvent`**: ultramodern's `osSetEventMesg` only records SP/DP/AI/SI, and its VI thread only delivers to the queue set via `osViSetEvent`. Call sites are rewritten to `swe1r_osSetEventMesg_recomp`, which forwards VI and passes the rest through.
+- **VI warm-up before `start_game`**: ultramodern only swaps its double-buffered VI state once a VI mode exists, and before the game starts only the dummy-VI path sets one. Starting the game immediately from `gfx_init_callback` meant the VI manager's queue never became current. We now wait four retraces on a helper thread.
+- **`osSetThreadPri` identified (0x8008BFB0)**: the init thread calls `osSetThreadPri(NULL, 0)` right before its idle loop. Unidentified, it stayed at priority 10, equal to the game thread, and ultramodern's scheduler only yields to strictly higher priority — the game thread never ran. This is what the old "pause_self yields to equal-priority threads" runtime patch was papering over.
+- **MMIO window**: the boot trampoline pokes `VI_H_START` through `0xA4400024`. librecomp protects everything above 512 MB, so `on_game_init` unprotects `0xA3F00000-0xA4FFFFFF` as zero-filled scratch.
+- **KSEG1 RDRAM mirror**: DMA buffers are addressed through `0xA0000000 | phys`. On macOS the 8 MB of RDRAM are re-mapped at the KSEG1 offset with `mach_vm_remap` (shared pages). Windows/Linux equivalents are TODO.
+- **Implicit declarations**: `__osSiRawStartDma` is in N64Recomp's `ignored_funcs`, so callers reference `__osSiRawStartDma_recomp` with no prototype; MSVC tolerated it, clang does not. `post_recomp_patches.py` appends the missing prototypes to `funcs.h`.
+- **Runtime API drift** (upstream vs. the May 2026 code): `recomp::start_game` takes a game-mode id, `GameEntry::display_name` is mandatory, `RendererContext::send_dummy_workload` is a new pure virtual, and the Apple `WindowHandle` is `{NSWindow*, CAMetalLayer*}`.
+
+---
+
+**Previous milestone: Phase 7 - Display Lists Are Reaching the Renderer**
 
 *"Now THIS is podracing!"*
 
@@ -107,7 +128,9 @@ The **game thread now boots and initializes**. All three major threads are runni
 
 - Python 3.x
 - GNU Make (or compatible)
-- [N64Recomp](https://github.com/N64Recomp/N64Recomp) (for recompilation step)
+- CMake ≥ 3.20 and Ninja
+- [N64Recomp](https://github.com/N64Recomp/N64Recomp), [N64ModernRuntime](https://github.com/N64Recomp/N64ModernRuntime) and [RT64](https://github.com/rt64/rt64), cloned **as siblings of this repo** (`../N64Recomp`, `../N64ModernRuntime`, `../rt64`, all with `--recurse-submodules`)
+- Windows: Visual Studio 2022 + vcpkg with SDL2. macOS: Xcode command line tools + `brew install cmake ninja sdl2`
 - Your own legally obtained ROM: `Star Wars Episode I - Racer (U) [!].z64`
 
 ### Setup
@@ -166,16 +189,51 @@ cmake --build build --config Release --target N64RecompCLI
 cd /path/to/racer
 make recomp N64RECOMP=/path/to/N64Recomp/build/Release/N64Recomp.exe
 
-# 3. Generate the function lookup table
+# 3. Post-process the generated code and build the lookup table
+#    (re-run all three after every recompile)
+python tools/fix_fallthroughs.py
+python tools/post_recomp_patches.py
 python tools/gen_lookup_table.py
 
 # 4. Build the native executable
 cmake -B build -G "Visual Studio 17 2022"
 cmake --build build --config Release
 
-# 5. Run it!
+# 5. Run it! (librecomp looks for the ROM as <game_id>.z64 in the working dir)
+copy baserom.z64 swe1racer.z64
 build/Release/SWE1Racer.exe
 ```
+
+#### macOS (Apple Silicon)
+
+```bash
+# 1. Toolchain, as siblings of this repo
+cd /path/to
+git clone --recurse-submodules https://github.com/N64Recomp/N64Recomp.git
+git clone --recurse-submodules https://github.com/N64Recomp/N64ModernRuntime.git
+git clone --recurse-submodules https://github.com/rt64/rt64.git
+brew install cmake ninja sdl2
+cmake -S N64Recomp -B N64Recomp/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build N64Recomp/build --target N64Recomp
+
+# 2. Recompile + post-process
+cd racer
+cp /path/to/rom.z64 baserom.z64
+../N64Recomp/build/N64Recomp recomp.toml
+python3 tools/fix_fallthroughs.py
+python3 tools/post_recomp_patches.py
+python3 tools/gen_lookup_table.py
+
+# 3. Build (RT64 compiles its Metal shaders with xcrun; first build takes a few minutes)
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build --target SWE1Racer
+
+# 4. Run
+cp baserom.z64 swe1racer.z64
+./build/SWE1Racer
+```
+
+Crashes print the faulting N64 address and a symbolized native backtrace (recompiled `func_XXXXXXXX` names included). `sample SWE1Racer 2` is handy for seeing where the game threads are blocked.
 
 ## Project Structure
 
@@ -194,11 +252,14 @@ racer/
 │   ├── progress.py        # Progress tracker
 │   ├── identify_libultra.py # libultra function pattern matcher (MIPS instruction matching)
 │   ├── fix_statics.py     # Auto-fix static_0_ sub-function errors
+│   ├── fix_fallthroughs.py # Chain split functions to their continuation
+│   ├── post_recomp_patches.py # Call rewrites, redirects, missing prototypes
 │   └── gen_lookup_table.py # Generate function lookup table
 ├── src/
-│   ├── main.cpp           # Entry point, SDL window, callbacks
+│   ├── main.cpp           # Entry point, SDL window, callbacks, host-side init hacks, crash handlers
 │   ├── section_table.cpp  # VRAM->function pointer lookup table
-│   ├── rt64_render_context.cpp  # RT64 renderer bridge (placeholder)
+│   ├── rt64_render_context.cpp  # RT64 renderer bridge (D3D12 on Windows, Metal on macOS)
+│   ├── support_apple.mm   # macOS: keep SDL from resizing RT64's CAMetalLayer
 │   └── audio.cpp          # Audio stubs (SDL playback TODO)
 ├── RecompiledFuncs/       # N64Recomp output (generated)
 │   ├── funcs.h            # Function declarations

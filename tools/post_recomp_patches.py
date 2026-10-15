@@ -29,7 +29,60 @@ REDIRECTS = {
     "func_80087D70": "osPiStartDma_recomp",   # game osPiStartDma -> bypass dead PI manager
 }
 
+# Functions N64Recomp renames to *_recomp (ignored_funcs list) but never
+# declares in funcs.h. MSVC accepted the implicit declaration; clang/gcc do
+# not. Each is implemented host-side (src/main.cpp) with the recomp signature.
+EXTRA_DECLS = [
+    "__osSiRawStartDma_recomp",
+    "swe1r_osSetEventMesg_recomp",
+]
+
+# Call-site rewrites: callee name -> replacement, applied to every call in the
+# generated funcs_*.c. Used when the callee is a runtime reimplementation we
+# cannot override at link time (defining it again would clash with librecomp)
+# but whose behaviour the game needs extended.
+#
+# - osSetEventMesg: ultramodern's version only records SP/DP/AI/SI. The game
+#   registers its VI retrace queue through OS_EVENT_VI here as well, and the
+#   runtime's VI thread only delivers to the queue set via osViSetEvent, so
+#   the scheduler would block forever in osRecvMesg. swe1r_osSetEventMesg_recomp
+#   (src/main.cpp) forwards VI to osViSetEvent and passes the rest through.
+CALL_REWRITES = {
+    "osSetEventMesg_recomp": "swe1r_osSetEventMesg_recomp",
+}
+
+def add_missing_decls():
+    fp = os.path.join(RECOMP_DIR, "funcs.h")
+    txt = open(fp, encoding="utf-8").read()
+    added = 0
+    for name in EXTRA_DECLS:
+        decl = f"void {name}(uint8_t* rdram, recomp_context* ctx);"
+        if decl not in txt:
+            block = f"// {MARKER}: host-implemented, missing from generated header\n{decl}\n"
+            # Insert before the trailing `#ifdef __cplusplus } #endif` so the
+            # declaration is visible to both C and C++ translation units.
+            idx = txt.rfind("#ifdef __cplusplus")
+            txt = (txt[:idx] + block + txt[idx:]) if idx != -1 else txt.rstrip("\n") + "\n" + block
+            added += 1
+    if added:
+        open(fp, "w", encoding="utf-8").write(txt)
+    print(f"post-recomp declarations added: {added}")
+
+def rewrite_calls():
+    total = 0
+    for fp in glob.glob(os.path.join(RECOMP_DIR, "funcs_*.c")):
+        txt = open(fp, encoding="utf-8", errors="replace").read()
+        new = txt
+        for src, dst in CALL_REWRITES.items():
+            new, n = re.subn(r'\b' + re.escape(src) + r'\(rdram, ctx\);', dst + '(rdram, ctx);', new)
+            total += n
+        if new != txt:
+            open(fp, "w", encoding="utf-8").write(new)
+    print(f"post-recomp call rewrites applied: {total}")
+
 def main():
+    add_missing_decls()
+    rewrite_calls()
     patched = 0
     for fp in glob.glob(os.path.join(RECOMP_DIR, "funcs_*.c")):
         lines = open(fp, encoding="utf-8", errors="replace").read().split("\n")

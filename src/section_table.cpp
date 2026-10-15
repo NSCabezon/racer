@@ -749,7 +749,6 @@ static FuncEntry section_funcs[] = {
     { func_8008BAB0, 0x8B6B0, 0x180 },
     { func_8008BC30, 0x8B830, 0x190 },
     { func_8008BDC0, 0x8B9C0, 0x1F0 },
-    { func_8008BFB0, 0x8BBB0, 0xE0 },
     { func_8008C100_dispatch, 0x8BD00, 0x50 },
     { func_8008C150, 0x8BD50, 0x40 },
     { func_8008C190, 0x8BD90, 0xF0 },
@@ -1365,8 +1364,6 @@ static FuncEntry section_funcs[] = {
     { static_0_8008C344, 0x8BF44, 0x0 },  // auto-detected
     { static_0_8008C738, 0x8C338, 0x0 },  // auto-detected
     { static_0_8008C900, 0x8C500, 0x0 },  // auto-detected
-    { static_0_8008CAC0, 0x8C6C0, 0x0 },  // auto-detected
-    { static_0_8008D22C, 0x8CE2C, 0x0 },  // auto-detected
     { static_0_8008D410, 0x8D010, 0x0 },  // auto-detected
     { static_0_8008D420, 0x8D020, 0x0 },  // auto-detected
     { static_0_80090500, 0x90100, 0x0 },  // auto-detected
@@ -1392,7 +1389,7 @@ SectionTableEntry section_table[] = {
         0x80000400,  // ram_addr
         0x98000,  // size
         section_funcs,  // funcs
-        1379,  // num_funcs
+        1376,  // num_funcs
         nullptr,  // relocs (none for static code)
         0,  // num_relocs
         0,  // index

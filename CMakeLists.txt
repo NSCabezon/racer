@@ -12,20 +12,35 @@ set(N64_MODERN_RUNTIME_DIR "${CMAKE_SOURCE_DIR}/../N64ModernRuntime" CACHE PATH
     "Path to N64ModernRuntime")
 set(RT64_DIR "${CMAKE_SOURCE_DIR}/../rt64" CACHE PATH
     "Path to RT64 renderer")
-set(CMAKE_TOOLCHAIN_FILE "C:/vcpkg/scripts/buildsystems/vcpkg.cmake" CACHE PATH
-    "vcpkg toolchain file")
+
+if(WIN32)
+    # Windows: dependencies come from vcpkg.
+    set(CMAKE_TOOLCHAIN_FILE "C:/vcpkg/scripts/buildsystems/vcpkg.cmake" CACHE PATH
+        "vcpkg toolchain file")
+elseif(APPLE)
+    # macOS: dependencies come from Homebrew (brew install sdl2 cmake ninja).
+    execute_process(COMMAND brew --prefix OUTPUT_VARIABLE HOMEBREW_PREFIX
+                    OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    if(HOMEBREW_PREFIX)
+        list(APPEND CMAKE_PREFIX_PATH "${HOMEBREW_PREFIX}")
+    endif()
+    # RT64 builds its Metal shaders with xcrun and links its own .mm sources.
+    enable_language(OBJC OBJCXX)
+endif()
 
 # =============================================================================
-# SDL2 (via vcpkg)
+# SDL2
 # =============================================================================
 find_package(SDL2 CONFIG REQUIRED)
 
 # =============================================================================
 # RT64 Renderer
 # =============================================================================
-# RT64 links SDL2 by bare name; ensure vcpkg's lib dir is on the search path
-link_directories("C:/vcpkg/installed/x64-windows/lib")
-link_directories("C:/vcpkg/installed/x64-windows/lib/manual-link")
+if(WIN32)
+    # RT64 links SDL2 by bare name; ensure vcpkg's lib dir is on the search path
+    link_directories("C:/vcpkg/installed/x64-windows/lib")
+    link_directories("C:/vcpkg/installed/x64-windows/lib/manual-link")
+endif()
 set(RT64_STATIC ON CACHE BOOL "Build RT64 as static library" FORCE)
 add_subdirectory(${RT64_DIR} ${CMAKE_BINARY_DIR}/rt64)
 
@@ -50,18 +65,23 @@ target_include_directories(RecompiledFuncs PRIVATE
 if(MSVC)
     # MSVC doesn't have strict aliasing by default
 else()
-    target_compile_options(RecompiledFuncs PRIVATE -fno-strict-aliasing)
+    target_compile_options(RecompiledFuncs PRIVATE -fno-strict-aliasing -Wno-unused-variable -Wno-unused-but-set-variable)
 endif()
 
 # =============================================================================
 # Main Executable
 # =============================================================================
-add_executable(SWE1Racer
+set(SWE1R_SOURCES
     src/main.cpp
     src/section_table.cpp
     src/rt64_render_context.cpp
     src/audio.cpp
 )
+if(APPLE)
+    list(APPEND SWE1R_SOURCES src/support_apple.mm)
+endif()
+
+add_executable(SWE1Racer ${SWE1R_SOURCES})
 
 target_include_directories(SWE1Racer PRIVATE
     ${N64_MODERN_RUNTIME_DIR}/N64Recomp/include     # recomp.h
@@ -86,10 +106,18 @@ target_link_libraries(SWE1Racer PRIVATE
     ultramodern
     rt64
     SDL2::SDL2
-    SDL2::SDL2main
 )
 
 if(WIN32)
-    target_link_libraries(SWE1Racer PRIVATE dxgi d3d12 d3dcompiler dbghelp)
+    target_link_libraries(SWE1Racer PRIVATE SDL2::SDL2main dxgi d3d12 d3dcompiler dbghelp)
     target_link_options(SWE1Racer PRIVATE /MAP)
+elseif(APPLE)
+    # Export symbols so backtrace()/dladdr can name recompiled func_XXXXXXXX frames in crash traces.
+    target_link_options(SWE1Racer PRIVATE "-Wl,-export_dynamic")
+    target_link_libraries(SWE1Racer PRIVATE
+        "-framework Metal"
+        "-framework QuartzCore"
+        "-framework Cocoa"
+        "-framework Foundation"
+    )
 endif()

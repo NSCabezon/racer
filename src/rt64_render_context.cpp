@@ -38,14 +38,28 @@ public:
         : rdram_(rdram), window_handle_(window_handle), developer_mode_(developer_mode)
     {
         setup_result = ultramodern::renderer::SetupResult::Success;
+#if defined(_WIN32)
         chosen_api = ultramodern::renderer::GraphicsApi::D3D12;
+#elif defined(__APPLE__)
+        chosen_api = ultramodern::renderer::GraphicsApi::Metal;
+#else
+        chosen_api = ultramodern::renderer::GraphicsApi::Vulkan;
+#endif
 
         // Get VI register pointers from ultramodern
         vi_regs_ = ultramodern::renderer::get_vi_regs();
 
         // Set up the RT64 Core structure
         RT64::Application::Core core{};
+#if defined(_WIN32)
         core.window = window_handle.window;
+#elif defined(__APPLE__)
+        // plume::RenderWindow on Apple is { NSWindow*, CAMetalLayer* }.
+        core.window.window = window_handle.window;
+        core.window.view = window_handle.view;
+#else
+        core.window = window_handle;
+#endif
         core.RDRAM = rdram;
         core.DMEM = s_dmem;
         core.IMEM = s_imem;
@@ -100,7 +114,12 @@ public:
         app_ = std::make_unique<RT64::Application>(core, app_config);
 
         // Run setup (creates graphics device, swap chain, shader caches, etc.)
-        auto result = app_->setup(window_handle.thread_id);
+        // The thread id is only meaningful for the Win32 message filter.
+        uint32_t setup_thread_id = 0;
+#if defined(_WIN32)
+        setup_thread_id = window_handle.thread_id;
+#endif
+        auto result = app_->setup(setup_thread_id);
 
         switch (result) {
         case RT64::Application::SetupResult::Success:
@@ -164,6 +183,19 @@ public:
         uint32_t dl_address = (uint32_t)task->t.data_ptr   & 0x3FFFFFF;
         app_->interpreter->loadUCodeGBI(ucode, ucode_data, true);
         app_->processDisplayLists(rdram_, dl_address, 0, true);
+    }
+
+    void send_dummy_workload(uint32_t fb_address) override {
+        // ultramodern only enqueues dummy workloads from the VI thread while
+        // is_game_started() is false. This game calls recomp::start_game from
+        // gfx_init_callback, i.e. immediately after the renderer comes up, so
+        // at most a handful of these arrive and there is nothing to draw yet.
+        // Ignoring them is safe; log once so it is visible in traces.
+        static bool logged = false;
+        if (!logged) {
+            logged = true;
+            printf("[SWE1R] send_dummy_workload fb=0x%08X (ignored)\n", fb_address);
+        }
     }
 
     void update_screen() override {

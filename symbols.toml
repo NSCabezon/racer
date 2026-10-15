@@ -3784,7 +3784,11 @@ size = 0x98000
   size = 0x1F0
 
   [[section.functions]]
-  name = "func_8008BFB0"
+  # osSetThreadPri: __osDisableInt, NULL -> __osRunningThread, compares pri at +4,
+  # __osDequeueThread/__osEnqueueThread, __osDispatchThread. The init thread calls
+  # it as osSetThreadPri(NULL, 0) right before its idle loop; without this the
+  # init thread keeps priority 10 and the game thread (also 10) never gets scheduled.
+  name = "osSetThreadPri"
   vram = 0x8008BFB0
   size = 0xE0
 

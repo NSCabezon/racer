@@ -31,3 +31,10 @@ desktop.ini
 
 # Claude Code
 .claude/
+
+# Runtime-generated (librecomp mod system, saves, RT64 config)
+mods.json
+mods.json.bak
+mods/
+mod_config/
+saves/
