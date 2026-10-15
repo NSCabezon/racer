@@ -583,6 +583,13 @@ void vi_callback() {
     uint32_t n = g_vi_count.fetch_add(1, std::memory_order_relaxed) + 1;
     swe1r_dl_watchdog_tick();
 
+    // Unattended shutdown test: SWE1R_QUIT_AFTER=<seconds> runs the same path as ESC.
+    static const int quit_after = std::getenv("SWE1R_QUIT_AFTER") ? atoi(std::getenv("SWE1R_QUIT_AFTER")) : 0;
+    if (quit_after > 0 && n == (uint32_t)quit_after * 60) {
+        printf("[SWE1R] SWE1R_QUIT_AFTER: requesting quit at retrace %u\n", n);
+        ultramodern::quit();
+    }
+
     uint32_t target = g_unblack_at.load(std::memory_order_relaxed);
     if (target != 0 && n >= target) {
         g_unblack_at.store(0, std::memory_order_relaxed);

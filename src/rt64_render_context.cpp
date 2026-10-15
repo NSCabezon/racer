@@ -12,8 +12,10 @@
 #include <algorithm>
 #include <chrono>
 #include <atomic>
+#include <cstdlib>
 
 #include "ultramodern/renderer_context.hpp"
+#include "ultramodern/ultramodern.hpp"
 #include "librecomp/game.hpp"
 
 // Static buffers for RT64 Core (RSP memory, not used in HLE mode but required)
@@ -369,6 +371,16 @@ public:
             app_.reset();
         }
         is_valid_ = false;
+
+        // librecomp's start() joins the event threads (we are on one of them)
+        // and then unmaps RDRAM, but it never stops the game's own OS threads,
+        // which keep polling their message queues and crash on the unmapped
+        // memory. Flush the save file and leave right here instead.
+        ultramodern::join_saving_thread();
+        printf("[SWE1R] Shutdown complete.\n");
+        fflush(stdout);
+        fflush(stderr);
+        std::_Exit(0);
     }
 
     uint32_t get_display_framerate() const override {
