@@ -55,7 +55,7 @@ No existing N64 decompilation exists for this game. We're flying blind through B
 | **libultra VI / printf / PIO Identification** | **COMPLETE** |
 | **RT64 Renderer Integration** | **COMPLETE** |
 | **Visible Frame Output (intro renders)** | **COMPLETE** |
-| Clean Shutdown | TODO |
+| **Clean Shutdown** | **COMPLETE** |
 | Audio Reimplementation | TODO |
 | Playable Build | THE DREAM |
 
@@ -92,13 +92,13 @@ Second batch, on the way from "first pixels" to a running race:
 
 **Known issues / next steps**
 
-- **Quitting crashes**: ESC (or SIGTERM) runs `ultramodern::quit`, the render context shuts down, and RT64's `RenderTargetManager` / a game thread then touches freed state (`SIGSEGV` in `RT64::RenderTargetManager::get` or at a low RDRAM address). Cosmetic for now; needs an orderly shutdown (stop the game threads before tearing down the renderer).
+- **Quitting**: librecomp's `start()` unmaps RDRAM after joining the event threads but never stops the game's own OS threads, which crashed polling their queues. The render context's `shutdown()` now flushes the save thread and exits the process directly. `SWE1R_QUIT_AFTER=N` exercises that path unattended.
 - **Visual check pending**: the last runs happened with the display asleep; the race loop runs for minutes at ~630 display lists/s (about 10 per frame), but the picture itself has only been confirmed for the intro.
 - **Audio**: RSP audio tasks are still no-op'd (`get_rsp_microcode` returns a microcode that reports `Broke`). Next: recompile the game's audio microcode with RSPRecomp, as other N64Recomp ports do.
 - **Controller**: `__osSiRawStartDma` synthesizes a single standard pad; keyboard mapping is in `get_input`. Rumble/pak unsupported.
 - **The `on_game_init` hacks** (PI handle at 0x800A7BC0 / 0x800A7FC0, fake VI context at 0x800A7F00) predate the VI fixes. 0x800A7BC0 is read by `osSetThreadPri` as `__osRunningThread`; revisit whether these writes are still needed now that the real VI functions are routed.
 - **Windows build**: the Win32 paths are preserved under `#if defined(_WIN32)` but have not been compiled since the macOS port; the KSEG1 mirror needs a `MapViewOfFile` equivalent there.
-- Handy scratch tools used for this phase (not in the repo): an `xref`/`dis` helper over `baserom.z64` + `symbols.toml`, and a scanner for function-pointer targets lacking symbols. Worth promoting into `tools/` next session.
+- `tools/n64util.py` (disassemble a raw range, cross-reference a global, find the symbol covering an address) and `tools/find_missing_funcs.py` (function-pointer targets without a symbol) are the helpers used throughout this phase.
 
 ---
 
@@ -281,6 +281,8 @@ racer/
 │   ├── fix_statics.py     # Auto-fix static_0_ sub-function errors
 │   ├── fix_fallthroughs.py # Chain split functions to their continuation
 │   ├── post_recomp_patches.py # Call rewrites, redirects, missing prototypes
+│   ├── n64util.py         # dis / xref / fn helpers over baserom.z64 + symbols.toml
+│   ├── find_missing_funcs.py # Function-pointer targets that lack a symbol (auto-split)
 │   └── gen_lookup_table.py # Generate function lookup table
 ├── src/
 │   ├── main.cpp           # Entry point, SDL window, callbacks, host-side init hacks, crash handlers
