@@ -1,0 +1,5 @@
+# Textures the HD pack must leave as the originals: one hash (or dumped file
+# name) per line, as in tex_dump/. Typical candidates: fonts and HUD digits
+# (AI upscaling smears them), masks and gradients.
+#
+# Used by tools/build_hd_pack.sh for both the upscale and the pack.

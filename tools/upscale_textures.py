@@ -4,14 +4,25 @@ upscale_textures.py — AI-upscale RT64 texture dumps for a replacement pack.
 
     python3 tools/upscale_textures.py SRC_DIR DST_DIR [--model realesrgan-x4plus]
         [--bin PATH] [--min-size 8] [--only LIST.txt] [--exclude LIST.txt]
+        [--skip-existing]
 
 SRC_DIR holds dumped textures (<hash>.v<N>.png, from SWE1R_DUMP_TEXTURES).
 DST_DIR receives 4x versions with the same names, ready for
 tools/make_texture_pack.py.
 
 Rules:
-- Seams: each texture is tiled 3x3 (wrap) before upscaling and the centre is
-  cropped back, so repeating textures still tile without a visible edge.
+- Seams: each texture is padded to 3x3 before upscaling and the centre is
+  cropped back. The padding follows the texture's S/T address modes from the
+  dump's .tile.json: wrap repeats it, mirror flips it, clamp stretches the edge
+  pixels. Wrapping a clamped texture (menu backgrounds built from 64x32
+  pieces) bleeds its opposite edge in and shows a grid of seams in game.
+- Mosaics: big 2D images (title background) are drawn as many small clamped
+  tiles loaded from consecutive RDRAM addresses (.rice.json). Runs of >= 4
+  same-size clamped tiles are laid out by trying column counts and S/T flips
+  and scoring how well neighbouring edges match; if the best layout clearly
+  beats random pairs, the whole image is upscaled at once and cut back into
+  tiles, so the AI sees across tile borders. Otherwise the tiles stay single.
+  --plan only prints the detected mosaics.
 - Alpha: upscaled separately as a grey image. If the original alpha is only
   0/255 (cut-outs: foliage, fences, text) the result is thresholded back to
   0/255 to keep edges crisp.
@@ -23,8 +34,8 @@ Needs realesrgan-ncnn-vulkan (https://github.com/xinntao/Real-ESRGAN, release
 v0.2.5.0 macOS zip). Default location: ../tools_ext/realesrgan/ next to the
 repo, or set REALESRGAN_BIN.
 """
-import argparse, os, shutil, subprocess, sys, tempfile
-from PIL import Image
+import argparse, json, os, random, shutil, subprocess, sys, tempfile
+from PIL import Image, ImageChops, ImageStat
 
 SCALE = 4
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -41,12 +52,175 @@ def read_list(path):
         return {line.strip().split(".")[0].lower() for line in fp if line.strip() and not line.startswith("#")}
 
 
-def tile3(im):
+WRAP, MIRROR, CLAMP = "wrap", "mirror", "clamp"
+
+
+def address_modes(src, name):
+    """(S, T) address modes from RT64's <hash>.v<N>.tile.json next to the dump.
+    G_TX_CLAMP (2) wins over G_TX_MIRROR (1); neither means wrap."""
+    path = os.path.join(src, name[: -len(".png")] + ".tile.json")
+    try:
+        with open(path) as fp:
+            tile = json.load(fp)["tile"]
+    except (OSError, ValueError, KeyError):
+        return WRAP, WRAP
+    mode = lambda cm: CLAMP if cm & 2 else MIRROR if cm & 1 else WRAP
+    return mode(tile["cms"]), mode(tile["cmt"])
+
+
+def pad_x(im, mode):
+    """Surround horizontally with what the sampler would see past each edge."""
     w, h = im.size
-    big = Image.new(im.mode, (w * 3, h * 3))
-    for y in range(3):
-        for x in range(3):
-            big.paste(im, (x * w, y * h))
+    if mode == WRAP:
+        left = right = im
+    elif mode == MIRROR:
+        left = right = im.transpose(Image.FLIP_LEFT_RIGHT)
+    else:
+        left = im.crop((0, 0, 1, h)).resize((w, h), Image.NEAREST)
+        right = im.crop((w - 1, 0, w, h)).resize((w, h), Image.NEAREST)
+    big = Image.new(im.mode, (w * 3, h))
+    for i, part in enumerate((left, im, right)):
+        big.paste(part, (i * w, 0))
+    return big
+
+
+def pad3(im, modes):
+    """3x3 context around the texture following its S/T address modes, so the
+    upscaled edges continue the way the texture is sampled in game (repeating,
+    mirrored or held at the edge) instead of always wrapping."""
+    rot = lambda m: m.transpose(Image.TRANSPOSE)
+    return rot(pad_x(rot(pad_x(im, modes[0])), modes[1]))
+
+
+BYTES_PER_TEXEL = {0: 0.5, 1: 1, 2: 2, 3: 4}  # by G_IM_SIZ
+MIN_RUN, MAX_COLS, ACCEPT, FLAT_STDDEV = 4, 32, 0.6, 4
+
+
+def tile_info(src, name):
+    """(width, height, siz, rdram address) from the dump's .tile/.rice.json."""
+    base = os.path.join(src, name[: -len(".png")])
+    try:
+        with open(base + ".tile.json") as fp:
+            tile = json.load(fp)
+        with open(base + ".rice.json") as fp:
+            addr = json.load(fp)["texture"]["address"]
+        return tile["width"], tile["height"], tile["tile"]["siz"], addr
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+def find_runs(src, names):
+    """Runs of clamped textures with the same size/format loaded from
+    consecutive addresses (addr + stride), followed by lookup so textures
+    of other screens interleaved in the same heap don't break them.
+    Addresses seen twice break the run (ambiguous)."""
+    groups = {}
+    for name in names:
+        if address_modes(src, name) != (CLAMP, CLAMP):
+            continue
+        info = tile_info(src, name)
+        if info is None or info[2] not in BYTES_PER_TEXEL:
+            continue
+        w, h, siz, addr = info
+        groups.setdefault((w, h, siz), {}).setdefault(addr, []).append(name)
+    runs = []
+    for (w, h, siz), by_addr in groups.items():
+        stride = int(w * h * BYTES_PER_TEXEL[siz])
+        unique = {addr: ns[0] for addr, ns in by_addr.items() if len(ns) == 1}
+        for addr in sorted(unique):
+            if addr - stride in unique:
+                continue  # not the start of a run
+            run = []
+            while addr in unique:
+                run.append((addr, unique[addr]))
+                addr += stride
+            if len(run) >= MIN_RUN:
+                runs.append(run)
+    return sorted(runs)
+
+
+def orient(im, flip_s, flip_t):
+    """Flip a tile; the same call undoes it."""
+    if flip_s:
+        im = im.transpose(Image.FLIP_LEFT_RIGHT)
+    if flip_t:
+        im = im.transpose(Image.FLIP_TOP_BOTTOM)
+    return im
+
+
+def edges(im):
+    """(crop, flat) for the L, R, T, B one-pixel edges of an RGBA tile. Flat
+    edges (transparent or one colour) match anything, so they are no evidence."""
+    w, h = im.size
+    out = []
+    for box in ((0, 0, 1, h), (w - 1, 0, w, h), (0, 0, w, 1), (0, h - 1, w, h)):
+        e = im.crop(box)
+        st = ImageStat.Stat(e)
+        out.append((e, st.extrema[3][1] == 0 or max(st.stddev[:3]) < FLAT_STDDEV))
+    return out
+
+
+def seam(a, b):
+    """Mean RGBA difference between two edges, None if both are flat."""
+    if a[1] and b[1]:
+        return None
+    return sum(ImageStat.Stat(ImageChops.difference(a[0], b[0])).mean) / 4
+
+
+def mean_seams(values, total):
+    """Mean of the informative seams, None if too few of them to judge."""
+    vals = [v for v in values if v is not None]
+    if len(vals) < max(2, total // 4):
+        return None
+    return sum(vals) / len(vals)
+
+
+def detect_layout(tiles):
+    """Best (cols, flip_s, flip_t, h_err, v_err, h_base, v_base) for a run of
+    RGBA tiles in address order, or None if no layout clearly fits. Tiles go
+    row-major; errors are mean edge differences between neighbours, baselines
+    the same over random non-neighbour pairs."""
+    n = len(tiles)
+    plain = [edges(t) for t in tiles]
+    rng = random.Random(0)
+    pairs = [(i, j) for i, j in ((rng.randrange(n), rng.randrange(n)) for _ in range(400))
+             if abs(i - j) > 1][:200]
+    h_base = mean_seams([seam(plain[i][1], plain[j][0]) for i, j in pairs], len(pairs))
+    v_base = mean_seams([seam(plain[i][3], plain[j][2]) for i, j in pairs], len(pairs))
+    if h_base is None or v_base is None or h_base < 1 or v_base < 1:
+        return None  # flat tiles: every edge matches every other
+    best = None
+    for flip_s in (False, True):
+        for flip_t in (False, True):
+            e = [edges(orient(t, flip_s, flip_t)) for t in tiles]
+            hd = [seam(e[i][1], e[i + 1][0]) for i in range(n - 1)]
+            for cols in range(2, min(MAX_COLS, n) + 1):
+                hp = [hd[i] for i in range(n - 1) if i % cols != cols - 1]
+                vp = [seam(e[i][3], e[i + cols][2]) for i in range(n - cols)]
+                h_err, v_err = mean_seams(hp, len(hp)), mean_seams(vp, len(vp))
+                if h_err is None or v_err is None:
+                    continue
+                score = h_err / h_base + v_err / v_base
+                if best is None or score < best[0]:
+                    best = (score, cols, flip_s, flip_t, h_err, v_err)
+    if best is None or best[4] >= ACCEPT * h_base or best[5] >= ACCEPT * v_base:
+        return None
+    return best[1:] + (h_base, v_base)
+
+
+def build_mosaic(tiles, cols, flip_s, flip_t):
+    """Paste oriented RGBA tiles row-major. Missing cells of a partial last row
+    hold the bottom edge of the tile above, stretched (cropped away later)."""
+    w, h = tiles[0].size
+    rows = (len(tiles) + cols - 1) // cols
+    big = Image.new("RGBA", (cols * w, rows * h))
+    oriented = [orient(t, flip_s, flip_t) for t in tiles]
+    for i in range(rows * cols):
+        x, y = (i % cols) * w, (i // cols) * h
+        if i < len(tiles):
+            big.paste(oriented[i], (x, y))
+        else:
+            big.paste(big.crop((x, y - 1, x + w, y)).resize((w, h), Image.NEAREST), (x, y))
     return big
 
 
@@ -58,6 +232,13 @@ def run_model(binary, model, src, dst):
         raise SystemExit(f"realesrgan failed ({r.returncode})")
 
 
+def alpha_kind(al):
+    """opaque / binary (only 0 and 255) / smooth."""
+    if al.getextrema()[0] == 255:
+        return "opaque"
+    return "binary" if not any(al.histogram()[1:255]) else "smooth"
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("src")
@@ -67,20 +248,16 @@ def main():
     ap.add_argument("--min-size", type=int, default=8)
     ap.add_argument("--only")
     ap.add_argument("--exclude")
+    ap.add_argument("--skip-existing", action="store_true",
+                    help="leave textures already in DST_DIR alone (incremental runs)")
+    ap.add_argument("--plan", action="store_true", help=argparse.SUPPRESS)  # print mosaics only
     a = ap.parse_args()
 
-    if not os.path.isfile(a.bin):
+    if not a.plan and not os.path.isfile(a.bin):
         raise SystemExit(f"upscaler not found at {a.bin} (set --bin or REALESRGAN_BIN)")
     only, exclude = read_list(a.only), read_list(a.exclude)
-    os.makedirs(a.dst, exist_ok=True)
 
-    work = tempfile.mkdtemp(prefix="upscale_")
-    rgb_in, rgb_out = os.path.join(work, "rgb_in"), os.path.join(work, "rgb_out")
-    al_in, al_out = os.path.join(work, "al_in"), os.path.join(work, "al_out")
-    for d in (rgb_in, rgb_out, al_in, al_out):
-        os.makedirs(d)
-
-    jobs = []  # (name, w, h, alpha_kind)
+    names, images = [], {}
     for name in sorted(os.listdir(a.src)):
         if not name.lower().endswith(".png"):
             continue
@@ -88,40 +265,101 @@ def main():
         if (only is not None and key not in only) or (exclude and key in exclude):
             continue
         im = Image.open(os.path.join(a.src, name)).convert("RGBA")
-        w, h = im.size
-        if w < a.min_size or h < a.min_size:
+        if im.size[0] < a.min_size or im.size[1] < a.min_size:
             continue
-        r, g, b, al = im.split()
-        tile3(Image.merge("RGB", (r, g, b))).save(os.path.join(rgb_in, name))
-        lo, hi = al.getextrema()
-        if lo == 255:
-            kind = "opaque"
-        else:
-            values = set(al.getdata())
-            kind = "binary" if values <= {0, 255} else "smooth"
-            tile3(Image.merge("RGB", (al, al, al))).save(os.path.join(al_in, name))
-        jobs.append((name, w, h, kind))
+        names.append(name)
+        images[name] = im
+
+    # Mosaics first; whatever is not claimed by one is upscaled on its own.
+    mosaics = []  # (addr, names, cols, flip_s, flip_t)
+    for run in find_runs(a.src, names):
+        run_names = [n for _, n in run]
+        size = images[run_names[0]].size
+        if any(images[n].size != size for n in run_names):
+            continue
+        lay = detect_layout([images[n] for n in run_names])
+        w, h = size
+        if lay is None:
+            print(f"run 0x{run[0][0]:x}: {len(run)} tiles {w}x{h}, no layout fits, kept single")
+            continue
+        cols, flip_s, flip_t, h_err, v_err, h_base, v_base = lay
+        flips = "".join(f for f, on in (("flipS", flip_s), ("flipT", flip_t)) if on)
+        print(f"mosaic 0x{run[0][0]:x}: {len(run)} tiles {w}x{h}, {cols} cols"
+              + (f", {flips}" if flips else "")
+              + f"  (seam h {h_err:.1f}/{h_base:.1f} v {v_err:.1f}/{v_base:.1f})")
+        mosaics.append((run[0][0], run_names, cols, flip_s, flip_t))
+    claimed = {n for m in mosaics for n in m[1]}
+    print(f"{len(mosaics)} mosaics ({len(claimed)} tiles), "
+          f"{len(names) - len(claimed)} single textures")
+    if a.plan:
+        return
+
+    os.makedirs(a.dst, exist_ok=True)
+    work = tempfile.mkdtemp(prefix="upscale_")
+    rgb_in, rgb_out = os.path.join(work, "rgb_in"), os.path.join(work, "rgb_out")
+    al_in, al_out = os.path.join(work, "al_in"), os.path.join(work, "al_out")
+    for d in (rgb_in, rgb_out, al_in, al_out):
+        os.makedirs(d)
+
+    exists = lambda n: a.skip_existing and os.path.exists(os.path.join(a.dst, n))
+    # Each job is one image fed to the model, cut back into pieces:
+    # (file, image, modes, [(name, x, y, flip_s, flip_t, kind)])
+    jobs = []
+    for addr, run_names, cols, flip_s, flip_t in mosaics:
+        if all(exists(n) for n in run_names):
+            continue
+        tiles = [images[n] for n in run_names]
+        w, h = tiles[0].size
+        pieces = [(n, (k % cols) * w, (k // cols) * h, flip_s, flip_t, alpha_kind(t.split()[3]))
+                  for k, (n, t) in enumerate(zip(run_names, tiles))]
+        jobs.append((f"mosaic_{addr:08x}.png", build_mosaic(tiles, cols, flip_s, flip_t),
+                     (CLAMP, CLAMP), pieces))
+    for name in names:
+        if name in claimed or exists(name):
+            continue
+        im = images[name]
+        jobs.append((name, im, address_modes(a.src, name),
+                     [(name, 0, 0, False, False, alpha_kind(im.split()[3]))]))
 
     if not jobs:
-        raise SystemExit("nothing to upscale")
-    print(f"upscaling {len(jobs)} textures with {a.model}...")
+        shutil.rmtree(work, ignore_errors=True)
+        print("nothing to upscale")
+        return
+    for file, im, modes, pieces in jobs:
+        r, g, b, al = im.split()
+        pad3(Image.merge("RGB", (r, g, b)), modes).save(os.path.join(rgb_in, file))
+        if any(p[5] != "opaque" for p in pieces):
+            pad3(Image.merge("RGB", (al, al, al)), modes).save(os.path.join(al_in, file))
+
+    print(f"upscaling {len(jobs)} images with {a.model}...")
     run_model(a.bin, a.model, rgb_in, rgb_out)
     if os.listdir(al_in):
         run_model(a.bin, a.model, al_in, al_out)
 
-    for name, w, h, kind in jobs:
-        box = (w * SCALE, h * SCALE, 2 * w * SCALE, 2 * h * SCALE)
-        rgb = Image.open(os.path.join(rgb_out, name)).convert("RGB").crop(box)
-        if kind == "opaque":
-            alpha = Image.new("L", rgb.size, 255)
-        else:
-            alpha = Image.open(os.path.join(al_out, name)).convert("L").crop(box)
-            if kind == "binary":
-                alpha = alpha.point(lambda v: 255 if v >= 128 else 0)
-        Image.merge("RGBA", (*rgb.split(), alpha)).save(os.path.join(a.dst, name))
+    written = 0
+    for file, im, modes, pieces in jobs:
+        W, H = im.size
+        rgb_big = Image.open(os.path.join(rgb_out, file)).convert("RGB")
+        al_big = None
+        if os.path.exists(os.path.join(al_in, file)):
+            al_big = Image.open(os.path.join(al_out, file)).convert("L")
+        for name, x, y, flip_s, flip_t, kind in pieces:
+            w, h = images[name].size
+            x0, y0 = (W + x) * SCALE, (H + y) * SCALE
+            box = (x0, y0, x0 + w * SCALE, y0 + h * SCALE)
+            rgb = rgb_big.crop(box)
+            if kind == "opaque":
+                alpha = Image.new("L", rgb.size, 255)
+            else:
+                alpha = al_big.crop(box)
+                if kind == "binary":
+                    alpha = alpha.point(lambda v: 255 if v >= 128 else 0)
+            out = orient(Image.merge("RGBA", (*rgb.split(), alpha)), flip_s, flip_t)
+            out.save(os.path.join(a.dst, name))
+            written += 1
 
     shutil.rmtree(work, ignore_errors=True)
-    print(f"wrote {len(jobs)} textures to {a.dst}")
+    print(f"wrote {written} textures to {a.dst}")
 
 
 if __name__ == "__main__":

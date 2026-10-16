@@ -102,18 +102,20 @@ All of these are implemented host-side in `src/main.cpp`, `src/rt64_render_conte
 Goal: higher-quality textures through RT64 replacement packs (`.rtz` = zip with `rt64.json` mapping texture hashes to images). louriccia/SWE1R-Mods has nothing usable for this (PC `.bin` packs and joke recolors).
 
 - **Phase 1, runtime support: done** (commit `005ebdf`). Verified with a red/blue-swapped, 4x pack on the title screen.
-- **Phase 2, upscaling: started.** `tools/upscale_textures.py` runs Real-ESRGAN (`realesrgan-x4plus`) at 4x with 3x3 wrap tiling so repeating textures don't show seams, and upscales alpha separately (thresholded back to 0/255 for cut-outs). It upscaled the 459 textures dumped up to the title screen in about 3 minutes. **Not yet looked at in game.**
+- **Phase 2, upscaling: working.** `tools/upscale_textures.py` runs Real-ESRGAN (`realesrgan-x4plus`) at 4x with 3x3 wrap tiling so repeating textures don't show seams, and upscales alpha separately (thresholded back to 0/255 for cut-outs). Coverage so far: boot, title, menus, vehicle select and The Boonta Training Course (902 textures, ~7 min to upscale, 45 MB pack). Checked in game: menu text and banners clearly sharper, HUD digits clean (no need to exclude fonts so far).
+- **Seams fixed (2026-10-16).** The first pack showed a grid on the title background. Two causes: (1) every texture was padded as if it wrapped; now padding follows each axis's real mode from `.tile.json` (wrap / mirror / clamp). (2) Big images are drawn as many clamped tiles (title: 75 tiles of 64x32 at 0x212b30, 10 per row, each stored vertically flipped); upscaling tiles alone can't match their neighbours. The upscaler now finds such mosaics (clamped, same size, consecutive addresses; columns and flips picked by edge continuity against a random-pair baseline), upscales the reassembled image and cuts it back. `--plan` prints the mosaics without upscaling. Found 3 so far (title, a ring, a menu panel). Remaining: the title's last partial row (5 tiles) is placed elsewhere by the game and still upscales alone, so a faint line can show at the very bottom.
+
+Policy: **no generated texture is versioned** (they derive from the ROM, and are reproducible). `tex_dump/`, `hd_out/` and `texture_packs/` are gitignored; only the recipe lives in git: the scripts and `textures/exclude.txt` (hashes to keep original). If textures ever get hand-retouched, those go in a separate private sibling repo (`../swe1r-hd-textures`, Git LFS), never a public remote.
 
 Workflow:
 
 ```bash
-SWE1R_DUMP_TEXTURES=tex_dump ./build/SWE1Racer           # play through what you want covered
-python3 tools/upscale_textures.py tex_dump hd_out          # 4x AI upscale, same file names
-python3 tools/make_texture_pack.py hd_out texture_packs/hd.rtz
-./build/SWE1Racer                                          # loads texture_packs/*.rtz
+SWE1R_DUMP_TEXTURES=tex_dump ./build/SWE1Racer   # play what you want covered; new textures add up
+tools/build_hd_pack.sh                           # incremental upscale -> texture_packs/hd.rtz
+./build/SWE1Racer                                # loads texture_packs/*.rtz
 ```
 
-Next: build a pack from that title upscale and compare in game; then the pilot on The Boonta Training Course (dump while playing it); review results (fonts/HUD probably need excluding, I4/IA textures may look plastic); then all 25 tracks. `tex_dump/` and `texture_packs/` are gitignored.
+Next: dump the other 24 tracks (needs playing them by hand; autoinput only reaches the first), look for textures the AI spoils (I4/IA ones may look plastic) and list them in `textures/exclude.txt`.
 
 ## Next steps, in order
 
