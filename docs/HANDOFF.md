@@ -8,7 +8,7 @@ The N64 recomp of *Star Wars Episode I: Racer* builds and runs natively on macOS
 
 Visually confirmed: intro and hangar menu render correctly (models, textures, lighting).
 
-**Open visual bug (next task):** RT64 presents the picture in a small centered box instead of filling the window. The 320x240 intro looks square, the 640-wide interlaced menu mode looks like a narrow vertical column.
+**Open visual bug (next task):** the title/main menu (VI 320 mode) fills the window at 4:3, but the intro/cutscenes (VI 640 serrate mode, `status=0x13052`) are presented in a centered, nearly square box (~0.48 x 0.60 of the window). Aspect config, `removeBlackBorders` and V-span tweaks did not fix it; the framebuffer has stride 320 with a ~304x288 picture, and RT64 presents it inside a virtual 640x476 area. Full findings, measurements and next ideas: `docs/STEP1_ASPECT.md`. Races not checked yet.
 
 ## Setup on this Mac
 
@@ -55,6 +55,7 @@ Developer env vars:
 - Crashes print the faulting N64 address and a symbolized backtrace.
 - A display list running for more than 2 s is dumped to `dl_dump.bin` (words are in native order, decode with `<II`).
 - ROM helpers: `tools/n64util.py dis|xref|fn`, `tools/find_missing_funcs.py`.
+- `tools/capture_window.sh PREFIX "T1 T2" [VAR=val]` captures the game window at given seconds (needs an unlocked screen).
 - Screenshot of the game window even when covered: get its window id with a small Swift `CGWindowListCopyWindowInfo` helper, then `screencapture -x -l <id> out.png`. A full-screen capture shows whatever is on top, and nothing useful if the Mac is locked.
 
 ## Key lessons (do not re-learn these)
@@ -70,7 +71,7 @@ All of these are implemented host-side in `src/main.cpp`, `src/rt64_render_conte
 
 ## Next steps, in order
 
-1. **Fill the window at 4:3.** Find how RT64 derives the presented rect from the VI registers. The game uses `h_start 0x006C02EC`, `x_scale 0x200`, `y_scale 0x400`, `VI_WIDTH` 320 (intro) and 640 with serrate (menu/race). Starting points: `../rt64/src/hle/rt64_vi.cpp`, `../rt64/src/render/rt64_vi_renderer.cpp`, ultramodern `update_vi()` in `../N64ModernRuntime/ultramodern/src/events.cpp`. Compare with how Zelda64Recomp configures RT64.
+1. **Fill the window at 4:3 in the 640 serrate mode** (title already OK; see `docs/STEP1_ASPECT.md`). Find how RT64 derives the presented rect from the VI registers. The game uses `h_start 0x006C02EC`, `x_scale 0x200`, `y_scale 0x400`, `VI_WIDTH` 320 (intro) and 640 with serrate (menu/race). Starting points: `../rt64/src/hle/rt64_vi.cpp`, `../rt64/src/render/rt64_vi_renderer.cpp`, ultramodern `update_vi()` in `../N64ModernRuntime/ultramodern/src/events.cpp`. Compare with how Zelda64Recomp configures RT64.
 2. **Gamepad via SDL**: game controller API, analog stick mapping, rumble.
 3. **Audio**: recompile the game's audio microcode (`ucode=0x80099450`, `data=0x800AE5F0`) with RSPRecomp, feed SDL audio. Revisit the yield emulation then, since it re-runs resumed audio tasks.
 4. **Play-test races** on several tracks to catch remaining game-logic crashes.
