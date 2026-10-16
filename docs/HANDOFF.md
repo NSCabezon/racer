@@ -58,6 +58,9 @@ Developer env vars:
 | `SWE1R_HWWATCH="0xADDR:SECS"` | Arm an ARM64 hardware write watchpoint on an N64 word at SECS; the writer's backtrace is printed. `SWE1R_HWWATCH2` adds up to 2 more words |
 | `SWE1R_LOG_DT=1` | Log frame delta times over 0.1 s (double at 0x80120BF0) |
 | `SWE1R_OVERSCAN=0.03` | Hide that fraction per side like a CRT (default 0, whole framebuffer) |
+| `SWE1R_DEV=1` | RT64 developer mode: F1 inspector, F4 texture replacement panel |
+| `SWE1R_DUMP_TEXTURES=tex_dump` | Dump every texture the game uploads as `<hash>.v5.png` from boot |
+| `SWE1R_TEXTURE_PACKS=dir` | Where texture packs load from (default `texture_packs/`): every `*.rtz` or folder with `rt64.json` |
 | `SWE1R_RBB=1` | Turn RT64's `removeBlackBorders` back on (default off; on breaks the serrate mode) |
 
 ## Debugging recipe
@@ -85,6 +88,10 @@ Developer env vars:
 - Function boundaries in the libultra region (0x8008xxxx+) were often wrong or stubbed. When a crash smells like empty output, check `recomp.toml` stubs first.
 
 All of these are implemented host-side in `src/main.cpp`, `src/rt64_render_context.cpp` and `tools/post_recomp_patches.py`. The README "Phase 8" section has the full list with addresses.
+
+## Texture packs (HD textures project)
+
+Phase 1 done: dump with `SWE1R_DUMP_TEXTURES`, edit or upscale the PNGs keeping their names, then `python3 tools/make_texture_pack.py SRC texture_packs/name.rtz`. Verified with a red/blue-swapped 4x pack on the title screen. Next: phase 2 pilot on The Boonta Training Course (dump while playing it, AI upscale with wrap-aware padding and alpha handling, compare), then all tracks. louriccia/SWE1R-Mods has no usable HD textures (PC `.bin` packs).
 
 ## Next steps, in order
 

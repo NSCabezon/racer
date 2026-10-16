@@ -38,3 +38,7 @@ mods.json.bak
 mods/
 mod_config/
 saves/
+
+# Texture packs and dumps (large, user content)
+texture_packs/
+tex_dump/

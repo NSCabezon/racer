@@ -1169,7 +1169,8 @@ int main(int argc, char* argv[]) {
     // 60 Hz, modest MSAA. There is no settings UI yet.
     {
         ultramodern::renderer::GraphicsConfig gfx{};
-        gfx.developer_mode = false;
+        // SWE1R_DEV=1: RT64 developer mode (F1 inspector, F4 replacements).
+        gfx.developer_mode = std::getenv("SWE1R_DEV") != nullptr;
         gfx.res_option  = ultramodern::renderer::Resolution::Auto;
         gfx.wm_option   = ultramodern::renderer::WindowMode::Windowed;
         gfx.hr_option   = ultramodern::renderer::HUDRatioMode::Original;

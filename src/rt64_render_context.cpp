@@ -10,6 +10,7 @@
 #include <memory>
 #include <string>
 #include <algorithm>
+#include <filesystem>
 #include <chrono>
 #include <atomic>
 #include <cstdlib>
@@ -238,6 +239,7 @@ public:
         case RT64::Application::SetupResult::Success:
             printf("[SWE1R] RT64 initialized successfully\n");
             is_valid_ = true;
+            setup_texture_replacements();
             break;
         case RT64::Application::SetupResult::DynamicLibrariesNotFound:
             fprintf(stderr, "[SWE1R] RT64: Dynamic libraries not found\n");
@@ -412,6 +414,40 @@ public:
     }
 
 private:
+    // Texture replacement packs and dumping.
+    //  - Packs: every *.rtz file or folder with an rt64.json inside
+    //    SWE1R_TEXTURE_PACKS (default ./texture_packs), loaded in name order.
+    //  - SWE1R_DUMP_TEXTURES=dir dumps every texture the game uploads as
+    //    <hash>.v<N>.png (plus raw .tmem) from boot on.
+    void setup_texture_replacements() {
+        namespace fs = std::filesystem;
+        if (const char* dump = std::getenv("SWE1R_DUMP_TEXTURES")) {
+            std::error_code ec;
+            fs::create_directories(dump, ec);
+            app_->state->dumpingTexturesDirectory = fs::path(dump);
+            printf("[tex] dumping textures to %s\n", dump);
+        }
+        const char* env = std::getenv("SWE1R_TEXTURE_PACKS");
+        fs::path root = env ? fs::path(env) : fs::path("texture_packs");
+        std::error_code ec;
+        if (!fs::is_directory(root, ec)) return;
+        std::vector<fs::path> entries;
+        for (const auto& e : fs::directory_iterator(root, ec)) {
+            if (e.is_regular_file() && e.path().extension() == ".rtz") entries.push_back(e.path());
+            else if (e.is_directory() && fs::exists(e.path() / "rt64.json")) entries.push_back(e.path());
+        }
+        if (entries.empty()) return;
+        std::sort(entries.begin(), entries.end());
+        std::vector<RT64::ReplacementDirectory> dirs;
+        for (const auto& p : entries) {
+            dirs.emplace_back(p);
+            printf("[tex] texture pack: %s\n", p.string().c_str());
+        }
+        if (!app_->textureCache->loadReplacementDirectories(dirs)) {
+            fprintf(stderr, "[tex] WARNING: failed to load texture packs from %s\n", root.string().c_str());
+        }
+    }
+
     // Walk the F3DEX2 display list tree the way the RSP would (G_DL calls and
     // branches, G_ENDDL, segment table) without drawing anything. Returns false
     // if some list runs into a long stretch of zero words: RT64 would execute
