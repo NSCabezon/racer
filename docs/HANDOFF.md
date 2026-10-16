@@ -1,6 +1,6 @@
 # Handoff: SWE1Racer on Apple Silicon
 
-Last updated: 2026-10-16. Branch `main`, not pushed.
+Last updated: 2026-10-17. Branch `main`, not pushed.
 
 ## Where we are
 
@@ -136,7 +136,7 @@ Next: dump the other 24 tracks (needs playing them by hand; autoinput only reach
 
 1. **Finish a race** by hand and check the results screen and the next race.
 2. **Gamepad via SDL**: game controller API, analog stick mapping, rumble.
-3. **Audio**: working (see below). Have a human listen for pitch, crackle and missing effects across menus and races.
+3. **Audio**: working (see below). First listen by a human on 2026-10-17: sounds right in menus and a race. Keep an ear out for missing effects on untested screens (some audio functions may still be stubbed).
 4. **Play-test races** on several tracks to catch remaining game-logic crashes.
 5. **RT64 enhancements**: widescreen (note: RT64's source aspect in the serrate mode is still 320/476, so `Expand` will need a look), high resolution, interpolated 60 fps.
 6. **macOS `.app` bundle**: icon, ROM import on first launch, saves in Application Support.
