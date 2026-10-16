@@ -1,0 +1,32 @@
+diff --git a/src/hle/rt64_vi.h b/src/hle/rt64_vi.h
+index 5b70e01..76b9060 100644
+--- a/src/hle/rt64_vi.h
++++ b/src/hle/rt64_vi.h
+@@ -147,6 +147,9 @@ namespace RT64 {
+         float yOffsetFloat() const;
+         hlslpp::float4 viewRectangle() const;
+         hlslpp::float4 cropRectangle() const;
++
++        // Fraction of the picture hidden on each side, like a CRT's overscan.
++        static float overscanCrop;
+         float gamma() const;
+         bool compatibleWith(const VI &vi) const;
+         bool visible() const;
+diff --git a/src/hle/rt64_vi.cpp b/src/hle/rt64_vi.cpp
+index a870166..7e5e3ec 100644
+--- a/src/hle/rt64_vi.cpp
++++ b/src/hle/rt64_vi.cpp
+@@ -15,8 +15,12 @@
+ namespace RT64 {
+     // VI
+     
++    float VI::overscanCrop = 0.0f;
++
+     hlslpp::float4 VI::viewRectangle() const {
+-        return { 0.0f, 0.0f, 1.0f, 1.0f };
++        // Grow the view by the overscan fraction so the edges fall outside the window.
++        const float c = overscanCrop;
++        return { -c, -c, 1.0f + 2.0f * c, 1.0f + 2.0f * c };
+     }
+ 
+     hlslpp::float4 VI::cropRectangle() const {

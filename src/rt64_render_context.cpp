@@ -212,6 +212,11 @@ public:
         // reports a 320x476 framebuffer and RT64 drew it as a narrow column.
         app_->enhancementConfig.presentation.removeBlackBorders = false;
         if (const char* e = std::getenv("SWE1R_RBB")) app_->enhancementConfig.presentation.removeBlackBorders = (e[0] == '1');
+        // Hide a CRT-like overscan margin (3% per side, keeps 4:3). The game
+        // leaves stale pixels in the framebuffer edges (e.g. a magenta strip on
+        // the title screen) that a TV never showed. SWE1R_OVERSCAN=<fraction>.
+        RT64::VI::overscanCrop = 0.03f;
+        if (const char* e = std::getenv("SWE1R_OVERSCAN")) RT64::VI::overscanCrop = std::clamp((float)atof(e), 0.0f, 0.2f);
 #if defined(_WIN32)
         app_->userConfig.graphicsAPI = RT64::UserConfiguration::GraphicsAPI::D3D12;
 #elif defined(__APPLE__)

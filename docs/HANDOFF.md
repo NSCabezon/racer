@@ -57,6 +57,7 @@ Developer env vars:
 | `SWE1R_CRASH_DUMP=path` | Write the 8 MB RDRAM to `path` when the game crashes |
 | `SWE1R_HWWATCH="0xADDR:SECS"` | Arm an ARM64 hardware write watchpoint on an N64 word at SECS; the writer's backtrace is printed. `SWE1R_HWWATCH2` adds up to 2 more words |
 | `SWE1R_LOG_DT=1` | Log frame delta times over 0.1 s (double at 0x80120BF0) |
+| `SWE1R_OVERSCAN=0.03` | Fraction hidden per side like a CRT (default 0.03; 0 shows the whole framebuffer, including stale edge pixels such as a magenta strip on the title) |
 | `SWE1R_RBB=1` | Turn RT64's `removeBlackBorders` back on (default off; on breaks the serrate mode) |
 
 ## Debugging recipe
