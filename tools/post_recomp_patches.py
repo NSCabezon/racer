@@ -52,6 +52,7 @@ EXTRA_DECLS = [
     "swe1r_osSpTaskYielded_recomp",
     "swe1r_osViSetSpecialFeatures_recomp",
     "swe1r_get_time64_recomp",
+    "swe1r_osSpTaskStartGo_recomp",
 ]
 
 # Call-site rewrites: callee name -> replacement, applied to every call in the
@@ -79,6 +80,9 @@ CALL_REWRITES = {
     "osSpTaskYield_recomp": "swe1r_osSpTaskYield_recomp",
     "osSpTaskYielded_recomp": "swe1r_osSpTaskYielded_recomp",
     "osViSetSpecialFeatures_recomp": "swe1r_osViSetSpecialFeatures_recomp",
+    # osSpTaskStartGo: graphics tasks wait until RT64 parsed the list, like the
+    # RSP finishing before the CPU frees what the list references.
+    "osSpTaskStartGo_recomp": "swe1r_osSpTaskStartGo_recomp",
 }
 
 def add_missing_decls():

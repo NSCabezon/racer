@@ -117,6 +117,7 @@ void swe1r_dl_watchdog_tick() {
 }
 
 extern "C" void swe1r_signal_sp_done(); // main.cpp
+extern "C" void swe1r_gfx_task_parsed(); // main.cpp
 
 class SWE1RRenderContext : public ultramodern::renderer::RendererContext {
 public:
@@ -212,10 +213,10 @@ public:
         // reports a 320x476 framebuffer and RT64 drew it as a narrow column.
         app_->enhancementConfig.presentation.removeBlackBorders = false;
         if (const char* e = std::getenv("SWE1R_RBB")) app_->enhancementConfig.presentation.removeBlackBorders = (e[0] == '1');
-        // Hide a CRT-like overscan margin (3% per side, keeps 4:3). The game
-        // leaves stale pixels in the framebuffer edges (e.g. a magenta strip on
-        // the title screen) that a TV never showed. SWE1R_OVERSCAN=<fraction>.
-        RT64::VI::overscanCrop = 0.03f;
+        // Optional CRT-like overscan crop (fraction per side, keeps 4:3), e.g.
+        // SWE1R_OVERSCAN=0.03. Off by default: the edges the game leaves
+        // undrawn are black now that new render targets are cleared.
+        RT64::VI::overscanCrop = 0.0f;
         if (const char* e = std::getenv("SWE1R_OVERSCAN")) RT64::VI::overscanCrop = std::clamp((float)atof(e), 0.0f, 0.2f);
 #if defined(_WIN32)
         app_->userConfig.graphicsAPI = RT64::UserConfiguration::GraphicsAPI::D3D12;
@@ -309,6 +310,14 @@ public:
         g_current_dl_start_ns.store(std::chrono::steady_clock::now().time_since_epoch().count(), std::memory_order_relaxed);
         // Diagnostic: detect the game rewriting the root list while RT64 parses it.
         uint64_t sum_before = dl_checksum(dl_address);
+        if (!dl_tree_ok(dl_address)) {
+            // Drop this frame instead of hanging the gfx thread forever.
+            dl_dropped_++;
+            g_current_dl_addr.store(0, std::memory_order_relaxed);
+            swe1r_gfx_task_parsed();
+            swe1r_signal_sp_done();
+            return;
+        }
         app_->state->rsp->reset();
         app_->interpreter->loadUCodeGBI(ucode, ucode_data, true);
         app_->processDisplayLists(rdram_, dl_address, 0, true);
@@ -321,6 +330,7 @@ public:
             }
         }
         // The RSP is done with the list: now tell the game.
+        swe1r_gfx_task_parsed();
         swe1r_signal_sp_done();
         double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
         dl_time_total_ms_ += ms;
@@ -402,6 +412,52 @@ public:
     }
 
 private:
+    // Walk the F3DEX2 display list tree the way the RSP would (G_DL calls and
+    // branches, G_ENDDL, segment table) without drawing anything. Returns false
+    // if some list runs into a long stretch of zero words: RT64 would execute
+    // them as no-ops forever and hang the gfx thread. Logs where it happened.
+    bool dl_tree_ok(uint32_t root) {
+        uint32_t seg[16] = {};
+        struct Frame { uint32_t pc, caller_pc; };
+        std::vector<Frame> stack;
+        stack.push_back({ root & 0x7FFFF8, 0 });
+        uint32_t steps = 0, zero_run = 0;
+        auto resolve = [&](uint32_t a) -> uint32_t {
+            if ((a & 0xF0000000u) == 0x80000000u || (a & 0xF0000000u) == 0xA0000000u) return a & 0x7FFFFF;
+            return (seg[(a >> 24) & 0xF] + (a & 0xFFFFFF)) & 0x7FFFFF;
+        };
+        while (!stack.empty() && steps < 400000) {
+            Frame& f = stack.back();
+            if (f.pc + 8 > 0x800000) return true; // out of RDRAM: let RT64 decide
+            uint32_t w0 = *(const uint32_t*)(rdram_ + f.pc), w1 = *(const uint32_t*)(rdram_ + f.pc + 4);
+            uint32_t here = f.pc;
+            f.pc += 8; steps++;
+            if (w0 == 0 && w1 == 0) {
+                if (++zero_run >= 512) {
+                    printf("[dl] list at 0x%08X runs into zeros at 0x%08X (called from 0x%08X, depth %zu, root 0x%08X)\n",
+                           0x80000000u | (here - 8 * 511), 0x80000000u | here, 0x80000000u | f.caller_pc, stack.size(), 0x80000000u | root);
+                    return false;
+                }
+                continue;
+            }
+            zero_run = 0;
+            switch (w0 >> 24) {
+            case 0xDF: stack.pop_back(); break;                              // G_ENDDL
+            case 0xDB:                                                       // G_MOVEWORD
+                if (((w0 >> 16) & 0xFF) == 0x06) seg[((w0 & 0xFFFF) >> 2) & 0xF] = w1 & 0xFFFFFF;
+                break;
+            case 0xDE: {                                                     // G_DL
+                uint32_t target = resolve(w1) & ~7u;
+                if (((w0 >> 16) & 0xFF) == 0x01) { f.pc = target; }          // branch, no return
+                else if (stack.size() < 18) stack.push_back({ target, here }); // call
+                break;
+            }
+            default: break;
+            }
+        }
+        return true;
+    }
+
     uint64_t dl_checksum(uint32_t dl_offset) const {
         // FNV-1a over the first 16 KB of the root list (enough to catch rewrites).
         const uint32_t* p = (const uint32_t*)(rdram_ + dl_offset);
@@ -410,6 +466,7 @@ private:
         return h;
     }
     uint32_t dl_modified_during_parse_ = 0;
+    uint32_t dl_dropped_ = 0;
 
     uint8_t* rdram_;
     ultramodern::renderer::WindowHandle window_handle_;

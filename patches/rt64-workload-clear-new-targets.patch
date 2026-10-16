@@ -1,0 +1,20 @@
+diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
+index 5a331aa..b754658 100644
+--- a/src/hle/rt64_workload_queue.cpp
++++ b/src/hle/rt64_workload_queue.cpp
+@@ -699,6 +699,15 @@ namespace RT64 {
+ 
+             workerMutex.lock();
+             ext.workloadGraphicsWorker->commandList->begin();
++
++            // Newly created or resized color targets hold uninitialized GPU memory.
++            // Clear them so areas the game never draws (e.g. overscan edges) show
++            // black, as in RDRAM, instead of garbage.
++            for (RenderTarget *renderTarget : resizedTargets) {
++                if ((renderTarget != nullptr) && (renderTarget->type == Framebuffer::Type::Color)) {
++                    renderTarget->clearColorTarget(ext.workloadGraphicsWorker);
++                }
++            }
+             ext.workloadGraphicsWorker->commandList->resetQueryPool(queryPool.get(), 0, 2);
+             ext.workloadGraphicsWorker->commandList->writeTimestamp(queryPool.get(), 0);
+             framebufferRenderer->endFramebuffers(ext.workloadGraphicsWorker, &workload.drawBuffers, &workload.outputBuffers, workloadConfig.raytracingEnabled);

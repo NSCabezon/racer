@@ -18,6 +18,7 @@
 #include <chrono>
 #include <thread>
 #include <mutex>
+#include <condition_variable>
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -255,6 +256,40 @@ extern "C" void swe1r_osSpTaskYielded_recomp(uint8_t* rdram, recomp_context* ctx
     static uint32_t count = 0;
     if (++count <= 5) printf("[sp] osSpTaskYielded -> %d\n", yielded ? 1 : 0);
     ctx->r2 = yielded ? 1 : 0;
+}
+
+// osSpTaskStartGo for graphics tasks: wait until RT64 has parsed the display
+// list. On hardware the RSP walks the list within a few milliseconds, before
+// the CPU gets around to freeing anything it references. Here RT64 parses on
+// the gfx thread, possibly much later (busy presenting, loaded machine); on a
+// scene change the game had already freed and zeroed the model memory a
+// sub-list pointed to, and RT64 then walked zeros (G_NOOP) forever: the
+// "display list running for >2 s" hang. Waiting keeps the hardware ordering.
+static std::mutex g_gfx_parse_mutex;
+static std::condition_variable g_gfx_parse_cv;
+static uint64_t g_gfx_submitted = 0, g_gfx_parsed = 0;
+
+extern "C" void swe1r_gfx_task_parsed() {
+    { std::lock_guard lock{ g_gfx_parse_mutex }; g_gfx_parsed++; }
+    g_gfx_parse_cv.notify_all();
+}
+
+extern "C" void osSpTaskStartGo_recomp(uint8_t* rdram, recomp_context* ctx);
+extern "C" void swe1r_osSpTaskStartGo_recomp(uint8_t* rdram, recomp_context* ctx) {
+    OSTask* task = TO_PTR(OSTask, ctx->r4);
+    if (task->t.type != M_GFXTASK) {
+        osSpTaskStartGo_recomp(rdram, ctx);
+        return;
+    }
+    uint64_t ticket;
+    { std::lock_guard lock{ g_gfx_parse_mutex }; ticket = ++g_gfx_submitted; }
+    osSpTaskStartGo_recomp(rdram, ctx);
+    std::unique_lock lock{ g_gfx_parse_mutex };
+    if (!g_gfx_parse_cv.wait_for(lock, std::chrono::seconds(3), [&] { return g_gfx_parsed >= ticket; })) {
+        static uint32_t timeouts = 0;
+        if (++timeouts <= 5) printf("[sp] gfx task %llu not parsed after 3 s, continuing\n", (unsigned long long)ticket);
+        g_gfx_parsed = ticket; // resync so later tasks don't inherit the lag
+    }
 }
 
 // func_800811DC: the game's 64-bit time, (wraps << 32) + osGetCount(), where

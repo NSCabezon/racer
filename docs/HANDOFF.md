@@ -57,7 +57,7 @@ Developer env vars:
 | `SWE1R_CRASH_DUMP=path` | Write the 8 MB RDRAM to `path` when the game crashes |
 | `SWE1R_HWWATCH="0xADDR:SECS"` | Arm an ARM64 hardware write watchpoint on an N64 word at SECS; the writer's backtrace is printed. `SWE1R_HWWATCH2` adds up to 2 more words |
 | `SWE1R_LOG_DT=1` | Log frame delta times over 0.1 s (double at 0x80120BF0) |
-| `SWE1R_OVERSCAN=0.03` | Fraction hidden per side like a CRT (default 0.03; 0 shows the whole framebuffer, including stale edge pixels such as a magenta strip on the title) |
+| `SWE1R_OVERSCAN=0.03` | Hide that fraction per side like a CRT (default 0, whole framebuffer) |
 | `SWE1R_RBB=1` | Turn RT64's `removeBlackBorders` back on (default off; on breaks the serrate mode) |
 
 ## Debugging recipe
@@ -97,7 +97,7 @@ All of these are implemented host-side in `src/main.cpp`, `src/rt64_render_conte
 
 ## Known loose ends
 
-- Intermittent hang: a display list (seen at `0x001217B8` and `0x00135038`) sometimes never finishes (watchdog fires, game freezes). Rare, more frequent with the machine under heavy load. Possibly the same game-thread concurrency that broke the timer: worth checking why two game threads can run at once.
+- Display-list hang (RT64 executing zeros as no-ops forever) is mitigated: `send_dl` pre-walks the F3DEX2 tree and drops a frame whose list runs into zeros, logging `[dl] list at ... runs into zeros`. Seen once: a sub-list call from model data at 0x801BFE58 landing at ~0x806D0000 (just below a framebuffer), so probably a stale segment register on a scene change. Root cause still open. Graphics tasks also wait until RT64 has parsed them (`swe1r_osSpTaskStartGo_recomp`), keeping hardware ordering.
 
 - Windows build: Win32 paths kept under `_WIN32` but not compiled since the port. The KSEG1 RDRAM mirror needs a `MapViewOfFile` equivalent there.
 - `on_game_init` still writes hacks (PI handle at 0x800A7BC0/0x800A7FC0, fake VI context at 0x800A7F00) that predate the real VI functions. 0x800A7BC0 is actually `__osRunningThread`. Worth revisiting.
