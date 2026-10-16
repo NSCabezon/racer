@@ -47,6 +47,21 @@ set(RT64_STATIC ON CACHE BOOL "Build RT64 as static library" FORCE)
 # src/support_apple.mm pins the layer to contentsScale 1 to match. Enabling
 # PLUME_APPLE_RETINA_ENABLED instead made RT64 collapse to ~1 fps in the game's
 # 640x480 interlaced mode.
+# Local fixes to upstream RT64, kept in patches/ so they survive re-clones.
+# Each patch is applied once; already-applied patches are skipped.
+file(GLOB RT64_PATCHES "${CMAKE_SOURCE_DIR}/patches/rt64-*.patch")
+foreach(patch ${RT64_PATCHES})
+    execute_process(COMMAND git apply --reverse --check ${patch}
+        WORKING_DIRECTORY ${RT64_DIR} RESULT_VARIABLE already OUTPUT_QUIET ERROR_QUIET)
+    if(NOT already EQUAL 0)
+        execute_process(COMMAND git apply ${patch}
+            WORKING_DIRECTORY ${RT64_DIR} RESULT_VARIABLE failed)
+        if(failed)
+            message(FATAL_ERROR "Could not apply ${patch} to ${RT64_DIR}")
+        endif()
+        message(STATUS "Applied RT64 patch ${patch}")
+    endif()
+endforeach()
 add_subdirectory(${RT64_DIR} ${CMAKE_BINARY_DIR}/rt64)
 
 # =============================================================================

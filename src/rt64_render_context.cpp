@@ -207,6 +207,11 @@ public:
         apply_user_config(app_.get(), ultramodern::renderer::get_graphics_config());
         app_->enhancementConfig.f3dex.forceBranch = true;
         app_->enhancementConfig.textureLOD.scale = true;
+        // Present through RT64's fixed 320x240 virtual screen. With black-border
+        // removal on, the 640-wide serrate mode (intro cutscenes, menus, races)
+        // reports a 320x476 framebuffer and RT64 drew it as a narrow column.
+        app_->enhancementConfig.presentation.removeBlackBorders = false;
+        if (const char* e = std::getenv("SWE1R_RBB")) app_->enhancementConfig.presentation.removeBlackBorders = (e[0] == '1');
 #if defined(_WIN32)
         app_->userConfig.graphicsAPI = RT64::UserConfiguration::GraphicsAPI::D3D12;
 #elif defined(__APPLE__)

@@ -1,0 +1,13 @@
+diff --git a/src/hle/rt64_vi.cpp b/src/hle/rt64_vi.cpp
+index a870166..b199696 100644
+--- a/src/hle/rt64_vi.cpp
++++ b/src/hle/rt64_vi.cpp
+@@ -81,7 +81,7 @@ namespace RT64 {
+         // Estimate the origin is off by one or two rows.
+         if (siz >= G_IM_SIZ_16b) {
+             const bool interlacedStep = status.serrate && (vCurrentLine & 0x1);
+-            const uint32_t rowBytes = width * (1U << (siz - 1));
++            const uint32_t rowBytes = uint32_t(fbSize().x) * (1U << (siz - 1));
+             const uint32_t rowCount = interlacedStep ? 2 : 1;
+             const uint32_t rowOffset = rowBytes * rowCount;
+             if (origin >= rowOffset) {

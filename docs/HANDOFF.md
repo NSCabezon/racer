@@ -1,6 +1,6 @@
 # Handoff: SWE1Racer on Apple Silicon
 
-Last updated: 2026-10-16. Branch `main`, last commit `da6de0d`, not pushed.
+Last updated: 2026-10-16. Branch `main`, not pushed.
 
 ## Where we are
 
@@ -8,7 +8,7 @@ The N64 recomp of *Star Wars Episode I: Racer* builds and runs natively on macOS
 
 Visually confirmed: intro and hangar menu render correctly (models, textures, lighting).
 
-**Open visual bug (next task):** the title/main menu (VI 320 mode) fills the window at 4:3, but the intro/cutscenes (VI 640 serrate mode, `status=0x13052`) are presented in a centered, nearly square box (~0.48 x 0.60 of the window). Aspect config, `removeBlackBorders` and V-span tweaks did not fix it; the framebuffer has stride 320 with a ~304x288 picture, and RT64 presents it inside a virtual 640x476 area. Full findings, measurements and next ideas: `docs/STEP1_ASPECT.md`. Races not checked yet.
+**Aspect fixed (step 1 done):** intro, cutscenes and title fill the window at 4:3, upscaled. Two causes, both in how RT64 handles the game's 640-wide serrate VI mode (`status=0x13052`): `removeBlackBorders` sized the virtual screen from a 320x476 framebuffer (narrow column), and `VI::fbAddress()` subtracted a 640-pixel row from the origin so RT64 never found the game's 320-wide framebuffer and fell back to a low-res RDRAM copy. Details in `docs/STEP1_ASPECT.md`. Races not checked visually yet.
 
 ## Setup on this Mac
 
@@ -17,7 +17,7 @@ Visually confirmed: intro and hangar menu render correctly (models, textures, li
 | ROM | `~/Downloads/sw racer.z64`, copied to `baserom.z64` and `swe1racer.z64` (both gitignored) |
 | N64Recomp (built) | `../N64Recomp/build/N64Recomp` |
 | N64ModernRuntime | `../N64ModernRuntime` (upstream main, unmodified) |
-| RT64 | `../rt64` (upstream main, unmodified) |
+| RT64 | `../rt64` (upstream main `de343a5`) plus `patches/rt64-*.patch`, applied automatically by CMake at configure time |
 | Save file | `saves/swe1racer.bin` (16 kbit EEPROM, 2 KB) |
 
 ## Build and run
@@ -45,6 +45,7 @@ Developer env vars:
 | `SWE1R_MSAA=0\|2\|4\|8` | Antialiasing |
 | `SWE1R_ASPECT=original\|expand` | Aspect ratio |
 | `SWE1R_NO_SPECIAL=1` | Ignore `osViSetSpecialFeatures` |
+| `SWE1R_RBB=1` | Turn RT64's `removeBlackBorders` back on (default off; on breaks the serrate mode) |
 
 ## Debugging recipe
 
@@ -71,15 +72,17 @@ All of these are implemented host-side in `src/main.cpp`, `src/rt64_render_conte
 
 ## Next steps, in order
 
-1. **Fill the window at 4:3 in the 640 serrate mode** (title already OK; see `docs/STEP1_ASPECT.md`). Find how RT64 derives the presented rect from the VI registers. The game uses `h_start 0x006C02EC`, `x_scale 0x200`, `y_scale 0x400`, `VI_WIDTH` 320 (intro) and 640 with serrate (menu/race). Starting points: `../rt64/src/hle/rt64_vi.cpp`, `../rt64/src/render/rt64_vi_renderer.cpp`, ultramodern `update_vi()` in `../N64ModernRuntime/ultramodern/src/events.cpp`. Compare with how Zelda64Recomp configures RT64.
-2. **Gamepad via SDL**: game controller API, analog stick mapping, rumble.
-3. **Audio**: recompile the game's audio microcode (`ucode=0x80099450`, `data=0x800AE5F0`) with RSPRecomp, feed SDL audio. Revisit the yield emulation then, since it re-runs resumed audio tasks.
-4. **Play-test races** on several tracks to catch remaining game-logic crashes.
-5. **RT64 enhancements**: widescreen, high resolution, interpolated 60 fps.
-6. **macOS `.app` bundle**: icon, ROM import on first launch, saves in Application Support.
-7. **Vision Pro stereo** (see the `avp-game-port` skill).
+1. **Gamepad via SDL**: game controller API, analog stick mapping, rumble.
+2. **Audio**: recompile the game's audio microcode (`ucode=0x80099450`, `data=0x800AE5F0`) with RSPRecomp, feed SDL audio. Revisit the yield emulation then, since it re-runs resumed audio tasks.
+3. **Play-test races** on several tracks to catch remaining game-logic crashes.
+4. **RT64 enhancements**: widescreen (note: RT64's source aspect in the serrate mode is still 320/476, so `Expand` will need a look), high resolution, interpolated 60 fps.
+5. **macOS `.app` bundle**: icon, ROM import on first launch, saves in Application Support.
+6. **Vision Pro stereo** (see the `avp-game-port` skill).
 
 ## Known loose ends
+
+- Intermittent hang: a display list at RDRAM `0x001217B8` sometimes never finishes during the intro (watchdog fires, game freezes). Seen in 2 of ~12 runs on 2026-10-16, with and without the aspect fix. Pressing Start mid-cutscene seemed to trigger it once.
+- One SIGBUS in `func_80006C00` (called from `func_8002F750`, N64 address ~0x4228ABA8) after pressing A in the menu around 43 s. Not reproduced yet.
 
 - Windows build: Win32 paths kept under `_WIN32` but not compiled since the port. The KSEG1 RDRAM mirror needs a `MapViewOfFile` equivalent there.
 - `on_game_init` still writes hacks (PI handle at 0x800A7BC0/0x800A7FC0, fake VI context at 0x800A7F00) that predate the real VI functions. 0x800A7BC0 is actually `__osRunningThread`. Worth revisiting.

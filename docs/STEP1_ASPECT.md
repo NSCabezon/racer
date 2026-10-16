@@ -1,6 +1,24 @@
 # Paso 1: la imagen debe llenar la ventana a 4:3
 
-Estado a 2026-10-16: **paso 1 sin resolver** en el modo de la intro/cutscenes. El arreglo candidato original no funcionó (ver abajo). Sin cambios de código en el juego; solo documentación y `tools/capture_window.sh`.
+## Resuelto (2026-10-16, tarde)
+
+Intro, cutscenes y título llenan la ventana a 4:3 y con resolución escalada. Dos causas en RT64 con el modo serrate de 640 (`status=0x13052`, `x_scale=0x200`, framebuffer real de 320 de ancho):
+
+1. **`removeBlackBorders` (RT64 lo trae activado por defecto).** Con él, el área virtual se dimensiona con `VI::fbSize()`, que en este modo da 320x476, y el viewport queda en 645x960 dentro de 1280x960: la columna estrecha. Apagado, RT64 usa una pantalla virtual fija de 320x240 y estira la imagen a 4:3, como un televisor. Las pruebas anteriores no lo veían porque ya estaba activado. Arreglo: `removeBlackBorders = false` en `src/rt64_render_context.cpp` (`SWE1R_RBB=1` lo reactiva).
+2. **`VI::fbAddress()` restaba una fila de 640 píxeles** al origen (0x500 bytes) en vez de una de 320 (0x280). El juego dibuja en 0x63B800 y el origen VI es 0x63BA80, así que RT64 buscaba 0x63B580, no encontraba el framebuffer y presentaba la copia de RDRAM a 1x (pixelada). Arreglo: usar `fbSize().x` para el tamaño de fila, en `patches/rt64-serrate-fbaddress.patch`, que CMake aplica a `../rt64` al configurar.
+
+Las bandas negras arriba y abajo en las cutscenes son del propio juego (dibuja ~384 filas de 476).
+
+Pendiente: la relación de aspecto de origen que RT64 usa para `Expand`/panorámico sigue siendo 320/476 en este modo. Revisar al hacer el modo panorámico.
+
+Instrumentación usada (revertida): un `fprintf` en `PresentQueue` tras calcular `fbSize` con `fbManager.find(vi.fbAddress())` y el volcado de `fbManager.framebuffers`, y otro al final de `VIRenderer::getViewportAndScissor`.
+
+---
+
+## Historial (antes de resolverlo)
+
+
+Estado a 2026-10-16 (mañana): paso 1 sin resolver en el modo de la intro/cutscenes. El arreglo candidato original no funcionó (ver abajo). Sin cambios de código en el juego; solo documentación y `tools/capture_window.sh`.
 
 ## Resultado de la sesión del 2026-10-16 (con capturas reales)
 
