@@ -101,6 +101,23 @@ if(APPLE)
     list(APPEND SWE1R_SOURCES src/support_apple.mm)
 endif()
 
+# Recompiled RSP audio microcode (generated, not versioned, like RecompiledFuncs):
+#   ../N64Recomp/build/RSPRecomp rsp/aspMain.toml
+set(SWE1R_RSP_SOURCES ${CMAKE_SOURCE_DIR}/rsp/aspMain.cpp)
+foreach(rsp_src ${SWE1R_RSP_SOURCES})
+    if(NOT EXISTS ${rsp_src})
+        message(FATAL_ERROR "${rsp_src} is missing. Generate it with: ../N64Recomp/build/RSPRecomp rsp/aspMain.toml")
+    endif()
+endforeach()
+list(APPEND SWE1R_SOURCES ${SWE1R_RSP_SOURCES})
+# sse2neon backs the RSP vector unit emulation on ARM (rsp_vu.hpp).
+set_source_files_properties(${SWE1R_RSP_SOURCES} PROPERTIES
+    INCLUDE_DIRECTORIES "${N64_MODERN_RUNTIME_DIR}/thirdparty/sse2neon")
+if(NOT MSVC)
+    set_source_files_properties(${SWE1R_RSP_SOURCES} PROPERTIES
+        COMPILE_OPTIONS "-Wno-unused-variable;-Wno-unused-label;-Wno-unused-but-set-variable")
+endif()
+
 add_executable(SWE1Racer ${SWE1R_SOURCES})
 
 target_include_directories(SWE1Racer PRIVATE

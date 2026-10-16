@@ -4,7 +4,7 @@ Last updated: 2026-10-16. Branch `main`, not pushed.
 
 ## Where we are
 
-The N64 recomp of *Star Wars Episode I: Racer* builds and runs natively on macOS (M1 Max, Metal via RT64) and is **playable**: intro, title, menus (pilot creation, vehicle, tournament, track) and races with HUD. A 17-minute play session by keyboard had no crashes or hangs. ESC quits cleanly. No sound yet. **Not verified:** the finish line and results screen (nobody has completed 3 laps yet).
+The N64 recomp of *Star Wars Episode I: Racer* builds and runs natively on macOS (M1 Max, Metal via RT64) and is **playable**: intro, title, menus (pilot creation, vehicle, tournament, track) and races with HUD. A 17-minute play session by keyboard had no crashes or hangs. ESC quits cleanly. Sound works (music, menu effects, engines; see Audio below). **Not verified:** the finish line and results screen (nobody has completed 3 laps yet).
 
 What was fixed on 2026-10-16 (details in commit messages and `docs/STEP1_ASPECT.md`):
 
@@ -44,6 +44,8 @@ The save file already holds pilot "AAA" (Anakin) from testing.
 python3 tools/fix_fallthroughs.py
 python3 tools/post_recomp_patches.py
 python3 tools/gen_lookup_table.py
+# audio microcode (needs baserom.z64; output rsp/aspMain.cpp is not versioned):
+../N64Recomp/build/RSPRecomp rsp/aspMain.toml
 
 cmake --build build --target SWE1Racer -j10
 ./build/SWE1Racer
@@ -69,6 +71,8 @@ Developer env vars:
 | `SWE1R_DEV=1` | RT64 developer mode: F1 inspector, F4 texture replacement panel |
 | `SWE1R_DUMP_TEXTURES=tex_dump` | Dump every texture the game uploads as `<hash>.v5.png` from boot |
 | `SWE1R_TEXTURE_PACKS=dir` | Where texture packs load from (default `texture_packs/`): every `*.rtz` or folder with `rt64.json` |
+| `SWE1R_MUTE=1` | No audio device; a wall-clock drain stands in so the game's audio pacing is unchanged |
+| `SWE1R_AUDIO_LOG=1` | Once per second: frequency, frames received/s, queue depth (min/max), peak sample, AI FIFO-full answers, underruns, aspMain task count |
 | `SWE1R_RBB=1` | Turn RT64's `removeBlackBorders` back on (default off; on breaks the serrate mode) |
 
 ## Debugging recipe
@@ -93,9 +97,20 @@ Developer env vars:
 - The game's SP scheduler needs `osSpTaskYielded` to return 1 after a yield request, or it deadlocks.
 - `osViBlack` is one-shot on hardware; ultramodern keeps it until cleared.
 - The game polls the pad through raw PIF blocks (`__osSiRawStartDma`), not through `osContGetReadData`.
-- Function boundaries in the libultra region (0x8008xxxx+) were often wrong or stubbed. When a crash smells like empty output, check `recomp.toml` stubs first.
+- Function boundaries in the libultra region (0x8008xxxx+) were often wrong or stubbed. When a crash smells like empty output, check `recomp.toml` stubs first. Names there are unreliable too: check a "libultra" name against its disassembly (`tools/n64util.py dis`) before trusting it (hardware functions use cop0 or 0xA4xx registers; libaudio uses neither).
 
 All of these are implemented host-side in `src/main.cpp`, `src/rt64_render_context.cpp` and `tools/post_recomp_patches.py`. The README "Phase 8" section has the full list with addresses.
+
+## Audio
+
+Done 2026-10-17. Pieces:
+
+- **Microcode**: the game's audio ucode is the standard libultra `aspMain` (ROM 0x9A050, 0xE20 bytes at IMEM 0x1080, data at 0x800AE5F0). `rsp/aspMain.toml` drives RSPRecomp; it lists the 16 command-table handlers (DMEM 0x10) as `extra_indirect_branch_targets`, otherwise the first `jr` dispatch fails. `get_rsp_microcode` (src/main.cpp) runs it for `M_AUDTASK` and then delivers the SP message.
+- **libaudio was stubbed**: everything from 0x8008C000 had been stubbed as "OS", including libaudio, and `alSynNew` (0x800887D0) was misnamed `cache_writeback`. Result: empty command lists, silence. recomp.toml now leaves libaudio compiled (list in its comment). Three libaudio functions were misnamed `osSetIntMask` / `osAiSetFrequency` / `osAiSetNextBuffer` (0x80090170, 0x800903D0, 0x80090450), so voice calls went to the runtime's AI and interrupt functions; the real osSetIntMask is 0x80090500. A filter param handler (0x8008E9F0) had been split into three pieces, one stubbed.
+- **Real AI functions** (0x80088150 osAiSetFrequency, 0x800882B0 osAiSetNextBuffer, 0x800883E0 osAiGetLength, 0x8008ADA0 osAiGetStatus) poke registers directly; `tools/post_recomp_patches.py` routes them to the runtime / host.
+- **Pacing**: the game's audio scheduler (0x8002E134) makes a ~1088-frame buffer at 22050 Hz when its clock passes a deadline **and** `osAiGetStatus` says the FIFO isn't full. `swe1r_osAiGetStatus_recomp` (src/audio.cpp) reports full while more than 1.5 buffers are queued. Without it production ran ~1.5% fast and the queue grew without bound.
+- **Output**: SDL queued audio, S16 stereo at the game's rate, channel pairs swapped (RDRAM word order).
+- **Yields**: `osSpTaskYielded` answering 1 also sets `OS_TASK_YIELDED` on the task; a resubmitted task carrying that flag is completed as a no-op (it already ran in full) and the flag is cleared. In testing the game never resubmitted one (`resumes_skipped=0`).
 
 ## Texture packs (HD textures project)
 
@@ -121,7 +136,7 @@ Next: dump the other 24 tracks (needs playing them by hand; autoinput only reach
 
 1. **Finish a race** by hand and check the results screen and the next race.
 2. **Gamepad via SDL**: game controller API, analog stick mapping, rumble.
-3. **Audio**: recompile the game's audio microcode (`ucode=0x80099450`, `data=0x800AE5F0`) with RSPRecomp, feed SDL audio. Revisit the yield emulation then, since it re-runs resumed audio tasks.
+3. **Audio**: working (see below). Have a human listen for pitch, crackle and missing effects across menus and races.
 4. **Play-test races** on several tracks to catch remaining game-logic crashes.
 5. **RT64 enhancements**: widescreen (note: RT64's source aspect in the serrate mode is still 320/476, so `Expand` will need a look), high resolution, interpolated 60 fps.
 6. **macOS `.app` bundle**: icon, ROM import on first launch, saves in Application Support.

@@ -185,7 +185,7 @@ extern "C" void __osSiRawStartDma_recomp(uint8_t* rdram, recomp_context* ctx) {
 // ended up parsing a list being overwritten: random garbage, endless texrect
 // loops, reads past 8 MB. We point ultramodern's SP event at a sink queue and
 // deliver the real message ourselves: after RT64 parsed the list (send_dl), or
-// immediately for audio tasks (no-op microcode).
+// for audio tasks once the recompiled aspMain returns (get_rsp_microcode).
 static constexpr int32_t kSpSinkQueue = 0x800A7E80; // same sink the VI-state hack uses
 static std::atomic<int32_t> g_sp_real_mq{0};
 static std::atomic<int32_t> g_sp_real_msg{0};
@@ -240,11 +240,16 @@ extern "C" void swe1r_osViSetSpecialFeatures_recomp(uint8_t* rdram, recomp_conte
 // osSpTaskYielded: if yielded it parks the task and resumes it after the gfx
 // task (0x8002E548); if not, it leaves its audio-pending flag set and the next
 // frame requests a yield with nothing running, waiting forever. ultramodern
-// runs tasks to completion instantly and librecomp answers "never yielded",
-// which is exactly the deadlock. Answering "yielded" after a request keeps the
-// game's state machine consistent. The resumed audio task is simply run again;
-// harmless while audio is a no-op (revisit when real audio microcode lands).
+// runs tasks to completion and librecomp answers "never yielded", which is
+// exactly the deadlock. Answering "yielded" after a request keeps the game's
+// state machine consistent. Like libultra, a yielded answer also sets
+// OS_TASK_YIELDED in the task's flags. By then aspMain has already run the
+// whole command list (the SP message is only sent after it returns), so the
+// resumed task must not run again: get_rsp_microcode sees the flag, clears it
+// (libultra's osSpTaskLoad does that on hardware) and completes it as a no-op.
+// Running it twice would advance the ADPCM/reverb state in RDRAM twice.
 static std::atomic<bool> g_sp_yield_requested{false};
+static constexpr uint32_t kOsTaskYielded = 0x0001; // OS_TASK_YIELDED (sptask.h)
 
 extern "C" void swe1r_osSpTaskYield_recomp(uint8_t* rdram, recomp_context* ctx) {
     g_sp_yield_requested.store(true, std::memory_order_relaxed);
@@ -253,6 +258,10 @@ extern "C" void swe1r_osSpTaskYield_recomp(uint8_t* rdram, recomp_context* ctx) 
 
 extern "C" void swe1r_osSpTaskYielded_recomp(uint8_t* rdram, recomp_context* ctx) {
     bool yielded = g_sp_yield_requested.exchange(false, std::memory_order_relaxed);
+    if (yielded && ctx->r4 != 0) {
+        OSTask* task = TO_PTR(OSTask, ctx->r4);
+        task->t.flags |= kOsTaskYielded;
+    }
     static uint32_t count = 0;
     if (++count <= 5) printf("[sp] osSpTaskYielded -> %d\n", yielded ? 1 : 0);
     ctx->r2 = yielded ? 1 : 0;
@@ -380,28 +389,61 @@ static SDL_Window* g_window = nullptr;
 // RSP Callbacks
 // =============================================================================
 
-// No-op RSP microcode. We don't yet have SWE1R's recompiled audio microcode
-// (that would come from N64Recomp's RSPRecomp, like pokemonsnap's aspMain).
-// Returning nullptr makes ultramodern's run_task abort the whole process, so
-// instead we pretend audio tasks completed (RspExitReason::Broke). Result: no
-// sound yet, but the game proceeds — and graphics tasks (M_GFXTASK) never reach
-// here anyway; submit_rsp_task routes those straight to the RT64 renderer.
+// Audio tasks (M_AUDTASK) run the game's audio microcode, the standard libultra
+// aspMain recompiled by RSPRecomp (rsp/aspMain.toml -> rsp/aspMain.cpp).
+// librecomp's run_task has already copied the OSTask to DMEM 0xFC0 and the
+// ucode data (vram 0x800AE5F0) to DMEM. Graphics tasks never reach here:
+// submit_rsp_task routes those to RT64. ultramodern's own SP completion goes to
+// a sink queue (see swe1r_osSetEventMesg_recomp), so each ucode delivers the
+// game's real SP message itself once the work is done.
+RspExitReason aspMain(uint8_t* rdram, uint32_t ucode_addr);
+
+static std::atomic<uint32_t> g_audio_tasks{0};
+static std::atomic<uint32_t> g_audio_resumes_skipped{0};
+
+static RspExitReason swe1r_audio_ucode(uint8_t* rdram, uint32_t ucode_addr) {
+    RspExitReason reason = aspMain(rdram, ucode_addr);
+    g_audio_tasks.fetch_add(1, std::memory_order_relaxed);
+    if (reason != RspExitReason::Broke) {
+        fprintf(stderr, "[audio] aspMain exited with reason %d\n", (int)reason);
+    }
+    swe1r_signal_sp_done();
+    return reason;
+}
+
+// Completes a task without running anything: resumed (already finished)
+// audio tasks, and task types we have no microcode for. Returning nullptr
+// would make run_task fail, so report a normal break.
 static RspExitReason swe1r_noop_ucode(uint8_t* /*rdram*/, uint32_t /*ucode_addr*/) {
-    // Audio task "completed": deliver the real SP message now (ultramodern's
-    // own completion goes to the sink queue, see swe1r_osSetEventMesg_recomp).
     swe1r_signal_sp_done();
     return RspExitReason::Broke;
 }
 
+uint32_t swe1r_audio_task_count() { return g_audio_tasks.load(std::memory_order_relaxed); }
+uint32_t swe1r_audio_resume_skip_count() { return g_audio_resumes_skipped.load(std::memory_order_relaxed); }
+
 RspUcodeFunc* get_rsp_microcode(const OSTask* task) {
     static uint32_t rsp_call_count = 0;
     rsp_call_count++;
-    if (rsp_call_count <= 5 || (rsp_call_count % 120 == 0)) {
-        fprintf(stderr, "[SWE1R] get_rsp_microcode #%u: type=%u ucode=0x%08X data=0x%08X\n",
-                rsp_call_count, task->t.type,
-                (uint32_t)task->t.ucode, (uint32_t)task->t.ucode_data);
+    if (rsp_call_count <= 5 || (rsp_call_count % 600 == 0)) {
+        fprintf(stderr, "[SWE1R] get_rsp_microcode #%u: type=%u flags=0x%X ucode=0x%08X data=0x%08X dl=0x%08X/0x%X out=0x%08X\n",
+                rsp_call_count, task->t.type, task->t.flags,
+                (uint32_t)task->t.ucode, (uint32_t)task->t.ucode_data,
+                (uint32_t)task->t.data_ptr, task->t.data_size, (uint32_t)task->t.output_buff);
     }
-    // Only non-graphics (audio) tasks reach here; no-op them for now.
+    if (task->t.flags & kOsTaskYielded) {
+        // Resumption of a task we answered "yielded" for: it already ran to
+        // completion. Clear the flag like osSpTaskLoad and just signal done.
+        const_cast<OSTask*>(task)->t.flags &= ~kOsTaskYielded;
+        uint32_t n = g_audio_resumes_skipped.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (n <= 5) fprintf(stderr, "[sp] resumed yielded task (type %u) #%u -> no-op\n", task->t.type, n);
+        return swe1r_noop_ucode;
+    }
+    if (task->t.type == M_AUDTASK) {
+        return swe1r_audio_ucode;
+    }
+    static uint32_t unknown = 0;
+    if (++unknown <= 5) fprintf(stderr, "[sp] task type %u has no microcode, completing as no-op\n", task->t.type);
     return swe1r_noop_ucode;
 }
 

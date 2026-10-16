@@ -3631,7 +3631,9 @@ size = 0x98000
   size = 0x298
 
   [[section.functions]]
-  name = "cache_writeback_800887D0"
+  # libaudio alSynNew (was mislabelled a cache writeback and stubbed, so the
+  # synth driver stayed empty and alAudioFrame at 0x80088538 built no commands).
+  name = "alSynNew"
   vram = 0x800887D0
   size = 0x300
 
@@ -4093,22 +4095,13 @@ size = 0x98000
   size = 0x4A4
 
   [[section.functions]]
-  # Auto-split: referenced as a function pointer; starts with a prologue after jr ra.
+  # libaudio filter param handler (switch on paramID through a jump table at
+  # 0x800B....). One function: it used to be split into a 4-byte piece, a
+  # stubbed "jr ra stub" and a fake osSetEventMesg copy, so the param calls
+  # (AL_FILTER_SET_WAVETABLE, AL_FILTER_START, ...) did nothing.
   name = "func_8008E9F0"
   vram = 0x8008E9F0
-  size = 0x4
-
-  [[section.functions]]
-  # Split: jr ra stub (0x10) + osSetEventMesg (0xD8)
-  name = "func_8008E9F4_stub"
-  vram = 0x8008E9F4
-  size = 0x10
-
-  [[section.functions]]
-  # Standard libultra copy - dead code (zero call sites), game uses custom version at 0x8008AE30
-  name = "osSetEventMesg_unused_8008EA04"
-  vram = 0x8008EA04
-  size = 0xD8
+  size = 0xEC
 
   [[section.functions]]
   name = "func_8008EADC"
@@ -4203,7 +4196,9 @@ size = 0x98000
   size = 0x90
 
   [[section.functions]]
-  name = "osSetIntMask"
+  # libaudio alSyn* setter (loads v->pvoice, calls __allocParam); was misnamed
+  # osSetIntMask, so calls went to the runtime's interrupt mask instead.
+  name = "func_80090170"
   vram = 0x80090170
   size = 0x90
 
@@ -4223,14 +4218,23 @@ size = 0x98000
   size = 0xA0
 
   [[section.functions]]
-  name = "osAiSetFrequency"
+  # libaudio alSyn* setter, not osAiSetFrequency (that is 0x80088150, routed
+  # by tools/post_recomp_patches.py).
+  name = "func_800903D0"
   vram = 0x800903D0
   size = 0x80
 
   [[section.functions]]
-  name = "osAiSetNextBuffer"
+  # libaudio (frees a voice's pvoice), not osAiSetNextBuffer (that is
+  # 0x800882B0). Followed by the real osSetIntMask (mfc0 Status).
+  name = "func_80090450"
   vram = 0x80090450
-  size = 0x150
+  size = 0xB0
+
+  [[section.functions]]
+  name = "osSetIntMask"
+  vram = 0x80090500
+  size = 0xA0
 
   [[section.functions]]
   name = "func_800905A0"

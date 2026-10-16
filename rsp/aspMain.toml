@@ -1,0 +1,18 @@
+# RSPRecomp config for the game's audio microcode (standard libultra aspMain).
+# Paths are relative to this file. Generate with:
+#   ../N64Recomp/build/RSPRecomp rsp/aspMain.toml
+# Text: ROM 0x9A050 (vram 0x80099450), 0xE20 bytes of code loaded at IMEM 0x1080
+# (past 0x1E9C the ROM holds game data, not microcode). Its DMEM data image
+# lives at vram 0x800AE5F0 and is loaded by librecomp from task->t.ucode_data.
+text_offset = 0x9A050
+text_size = 0xE20
+text_address = 0x1080
+rom_file_path = "../baserom.z64"
+output_file_path = "aspMain.cpp"
+output_function_name = "aspMain"
+# Command dispatch table (DMEM 0x10, 16 halfwords from the data image at
+# 0x800AE5F0): handlers reached only through `jr`, so RSPRecomp can't see them.
+extra_indirect_branch_targets = [
+    0x1118, 0x1470, 0x11DC, 0x1B38, 0x1214, 0x187C, 0x1254, 0x12D0,
+    0x12EC, 0x1328, 0x140C, 0x1294, 0x1E24, 0x138C, 0x170C, 0x144C,
+]

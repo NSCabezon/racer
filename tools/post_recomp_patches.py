@@ -37,6 +37,19 @@ REDIRECTS = {
     # animation code then recurses until the main thread's stack overflows.
     # The host version runs the same algorithm under a mutex.
     "func_800811DC": "swe1r_get_time64_recomp",
+    # The game's real libultra AI functions, called by its audio manager
+    # (~0x80007300). symbols.toml has the names osAiSetFrequency /
+    # osAiSetNextBuffer on two unrelated functions at 0x800903D0/0x80090450, so
+    # these were compiled as plain code poking the AI registers at 0xA4500000
+    # (nothing listens there) and no sample ever reached the host.
+    "func_80088150": "osAiSetFrequency_recomp",     # lui osViClock; falls into func_8008815C
+    "func_800882B0": "osAiSetNextBuffer_recomp",    # checks the hdwrBugFlag at 0x800A69A0, writes AI_DRAM_ADDR/AI_LEN
+    "static_0_800883E0": "osAiGetLength_recomp",    # lw v0, AI_LEN_REG
+    # osAiGetStatus (lw v0, AI_STATUS_REG). The audio scheduler (0x8002E134)
+    # only synthesizes a new frame while the FIFO-full bit is clear; that is
+    # what paces audio to the DAC. src/audio.cpp emulates the bit from the SDL
+    # queue depth (librecomp's version always answers 0 -> queue runs away).
+    "static_0_8008ADA0": "swe1r_osAiGetStatus_recomp",
 }
 
 # Functions N64Recomp renames to *_recomp (ignored_funcs list) but never
@@ -53,6 +66,10 @@ EXTRA_DECLS = [
     "swe1r_osViSetSpecialFeatures_recomp",
     "swe1r_get_time64_recomp",
     "swe1r_osSpTaskStartGo_recomp",
+    "osAiSetFrequency_recomp",
+    "osAiSetNextBuffer_recomp",
+    "osAiGetLength_recomp",
+    "swe1r_osAiGetStatus_recomp",
 ]
 
 # Call-site rewrites: callee name -> replacement, applied to every call in the
