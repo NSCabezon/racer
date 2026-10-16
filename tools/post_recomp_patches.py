@@ -31,6 +31,12 @@ REDIRECTS = {
     # reads the cart through 0xB0000000 (unmapped). librecomp has no osPiReadIo
     # wrapper (only osEPiReadIo, which takes a handle), so the host implements it.
     "osPiReadIo_8008A710": "swe1r_osPiReadIo_recomp",
+    # func_800811DC: the game's 64-bit timer (osGetCount + wrap counter at
+    # 0x800A675C/0x800A6760). Two game threads calling it at once can see the
+    # count "go backwards", add a spurious wrap and jump time by 91.6 s; the
+    # animation code then recurses until the main thread's stack overflows.
+    # The host version runs the same algorithm under a mutex.
+    "func_800811DC": "swe1r_get_time64_recomp",
 }
 
 # Functions N64Recomp renames to *_recomp (ignored_funcs list) but never
@@ -45,6 +51,7 @@ EXTRA_DECLS = [
     "swe1r_osSpTaskYield_recomp",
     "swe1r_osSpTaskYielded_recomp",
     "swe1r_osViSetSpecialFeatures_recomp",
+    "swe1r_get_time64_recomp",
 ]
 
 # Call-site rewrites: callee name -> replacement, applied to every call in the

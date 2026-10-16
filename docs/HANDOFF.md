@@ -10,6 +10,14 @@ Visually confirmed: intro and hangar menu render correctly (models, textures, li
 
 **Aspect fixed (step 1 done):** intro, cutscenes and title fill the window at 4:3, upscaled. Two causes, both in how RT64 handles the game's 640-wide serrate VI mode (`status=0x13052`): `removeBlackBorders` sized the virtual screen from a 320x476 framebuffer (narrow column), and `VI::fbAddress()` subtracted a 640-pixel row from the origin so RT64 never found the game's 320-wide framebuffer and fell back to a low-res RDRAM copy. Details in `docs/STEP1_ASPECT.md`. Races not checked visually yet.
 
+**Race reached (2026-10-16, evening):** the menus work end to end. Start, Start, then A repeatedly creates pilot "AAA" (Anakin) and starts Amateur race 1, The Boonta Training Course, with HUD and timer. Holding throttle for 4 minutes ran without crashes. The blocker was the game's 64-bit timer `func_800811DC`: two game threads interleaving inside it added a spurious osGetCount wrap, so time jumped 91.6 s (or 183 s). The animation update (`func_80006848` <-> `func_80006790`) then recursed once per loop period of that delta and the main thread's stack ran down through .data/.bss: random SIGBUS in `func_80006C00`/`func_80013DC0`, hangs. Fixed by redirecting it to `swe1r_get_time64_recomp` (same algorithm under a mutex). A full 3-lap race still needs someone to steer.
+
+Unattended route to the race (about 75 s):
+
+```bash
+SWE1R_AUTOINPUT="31:start,37:start,43:a,48:a,53:a,58:a,63:a,68:a,74-300:a" ./build/SWE1Racer
+```
+
 ## Setup on this Mac
 
 | What | Where |
@@ -45,6 +53,10 @@ Developer env vars:
 | `SWE1R_MSAA=0\|2\|4\|8` | Antialiasing |
 | `SWE1R_ASPECT=original\|expand` | Aspect ratio |
 | `SWE1R_NO_SPECIAL=1` | Ignore `osViSetSpecialFeatures` |
+| `SWE1R_AUTOINPUT` ranges/stick | `"74-300:a"` holds A; `sl sr su sd` push the stick |
+| `SWE1R_CRASH_DUMP=path` | Write the 8 MB RDRAM to `path` when the game crashes |
+| `SWE1R_HWWATCH="0xADDR:SECS"` | Arm an ARM64 hardware write watchpoint on an N64 word at SECS; the writer's backtrace is printed. `SWE1R_HWWATCH2` adds up to 2 more words |
+| `SWE1R_LOG_DT=1` | Log frame delta times over 0.1 s (double at 0x80120BF0) |
 | `SWE1R_RBB=1` | Turn RT64's `removeBlackBorders` back on (default off; on breaks the serrate mode) |
 
 ## Debugging recipe
@@ -60,6 +72,9 @@ Developer env vars:
 - Screenshot of the game window even when covered: get its window id with a small Swift `CGWindowListCopyWindowInfo` helper, then `screencapture -x -l <id> out.png`. A full-screen capture shows whatever is on top, and nothing useful if the Mac is locked.
 
 ## Key lessons (do not re-learn these)
+
+- Memory corruption hunting: dump RDRAM on crash, diff the data segment against the ROM (rom = vram - 0x80000000 + 0xC00), then trap the writer with `SWE1R_HWWATCH` on a read-only word the corruption hits. lldb and `mprotect` changed timing enough to hide the bug. Recompiled code does not maintain `$ra`, so return addresses on the MIPS stack are useless.
+- Game threads can run concurrently here. Any game routine that assumes it can't be interrupted (read-modify-write of shared globals) is a suspect.
 
 - SP completion must reach the game **after** RT64 parses the display list. The game rewrites its double-buffered list as soon as the RSP reports done.
 - EEPROM is 16 kbit. `Eep4k` silently overflows librecomp's save buffer.
@@ -81,8 +96,7 @@ All of these are implemented host-side in `src/main.cpp`, `src/rt64_render_conte
 
 ## Known loose ends
 
-- Intermittent hang: a display list at RDRAM `0x001217B8` sometimes never finishes during the intro (watchdog fires, game freezes). Seen in 2 of ~12 runs on 2026-10-16, with and without the aspect fix. Pressing Start mid-cutscene seemed to trigger it once.
-- One SIGBUS in `func_80006C00` (called from `func_8002F750`, N64 address ~0x4228ABA8) after pressing A in the menu around 43 s. Not reproduced yet.
+- Intermittent hang: a display list (seen at `0x001217B8` and `0x00135038`) sometimes never finishes (watchdog fires, game freezes). Rare, more frequent with the machine under heavy load. Possibly the same game-thread concurrency that broke the timer: worth checking why two game threads can run at once.
 
 - Windows build: Win32 paths kept under `_WIN32` but not compiled since the port. The KSEG1 RDRAM mirror needs a `MapViewOfFile` equivalent there.
 - `on_game_init` still writes hacks (PI handle at 0x800A7BC0/0x800A7FC0, fake VI context at 0x800A7F00) that predate the real VI functions. 0x800A7BC0 is actually `__osRunningThread`. Worth revisiting.

@@ -17,6 +17,7 @@
 #include <atomic>
 #include <chrono>
 #include <thread>
+#include <mutex>
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -28,6 +29,7 @@
 #include <execinfo.h>
 #include <unistd.h>
 #include <sys/mman.h>
+#include <fcntl.h>
 #endif
 #if defined(__APPLE__)
 #include <mach/mach.h>
@@ -255,6 +257,32 @@ extern "C" void swe1r_osSpTaskYielded_recomp(uint8_t* rdram, recomp_context* ctx
     ctx->r2 = yielded ? 1 : 0;
 }
 
+// func_800811DC: the game's 64-bit time, (wraps << 32) + osGetCount(), where
+// wraps (0x800A675C) is bumped whenever the count is lower than the last one
+// seen (0x800A6760). On hardware only one thread runs at a time; here two game
+// threads can interleave inside it, so one sees the count "go backwards", adds
+// a wrap and time jumps 91.6 s. The animation code (func_80006848 <->
+// func_80006790) then wraps a looping animation once per period of that delta,
+// recursing until the main thread's stack runs down through .data/.bss.
+// Same algorithm and same globals (the game resets the wrap count itself via
+// func_80081260), but read and updated atomically.
+extern "C" void swe1r_get_time64_recomp(uint8_t* rdram, recomp_context* ctx) {
+    static std::mutex m;
+    std::lock_guard lock{ m };
+    uint32_t* wraps = (uint32_t*)(rdram + 0xA675C);
+    uint32_t* last  = (uint32_t*)(rdram + 0xA6760);
+    uint32_t count = osGetCount();
+    if (count < *last) {
+        (*wraps)++;
+        static uint32_t logged = 0;
+        if (++logged <= 4) printf("[time] osGetCount wrapped (last 0x%08X now 0x%08X), wraps=%u\n", *last, count, *wraps);
+    }
+    *last = count;
+    uint64_t t = ((uint64_t)*wraps << 32) + count;
+    ctx->r2 = (int32_t)(uint32_t)(t >> 32);
+    ctx->r3 = (int32_t)(uint32_t)t;
+}
+
 // osPiStartDma(mb, pri, dir, devAddr, dramAddr, size, mq): logged pass-through
 // to librecomp's synchronous DMA (the game's PI manager thread is stubbed).
 extern "C" void osPiStartDma_recomp(uint8_t* rdram, recomp_context* ctx);
@@ -450,9 +478,11 @@ void poll_input() {
 
 // Scripted input for unattended runs: SWE1R_AUTOINPUT="12:start,30:a" presses
 // the named button at that many seconds after start, held for half a second.
-// Buttons: start a b z l r up down left right.
+// Buttons: start a b z l r up down left right; stick: sl sr su sd.
+// A range "40-90:a" holds the button from 40 s to 90 s.
+static float g_autoinput_x = 0.0f, g_autoinput_y = 0.0f;
 static uint16_t autoinput_buttons_at(double t_seconds) {
-    struct Press { double t; uint16_t mask; };
+    struct Press { double t; double t_end; uint16_t mask; int8_t sx, sy; };
     static std::vector<Press> presses;
     static bool parsed = false;
     if (!parsed) {
@@ -465,7 +495,10 @@ static uint16_t autoinput_buttons_at(double t_seconds) {
                 std::string item = str.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
                 size_t colon = item.find(':');
                 if (colon != std::string::npos) {
-                    double t = atof(item.substr(0, colon).c_str());
+                    std::string when = item.substr(0, colon);
+                    double t = atof(when.c_str());
+                    size_t dash = when.find('-');
+                    double t_end = (dash != std::string::npos) ? atof(when.c_str() + dash + 1) : t + 0.5;
                     std::string name = item.substr(colon + 1);
                     uint16_t mask = 0;
                     if (name == "start") mask = 0x1000; else if (name == "a") mask = 0x8000;
@@ -473,7 +506,10 @@ static uint16_t autoinput_buttons_at(double t_seconds) {
                     else if (name == "l") mask = 0x0020; else if (name == "r") mask = 0x0010;
                     else if (name == "up") mask = 0x0800; else if (name == "down") mask = 0x0400;
                     else if (name == "left") mask = 0x0200; else if (name == "right") mask = 0x0100;
-                    if (mask) presses.push_back({ t, mask });
+                    int8_t sx = 0, sy = 0;
+                    if (name == "sl") sx = -1; else if (name == "sr") sx = 1;
+                    else if (name == "su") sy = 1; else if (name == "sd") sy = -1;
+                    if (mask || sx || sy) presses.push_back({ t, t_end, mask, sx, sy });
                 }
                 if (comma == std::string::npos) break;
                 pos = comma + 1;
@@ -482,8 +518,12 @@ static uint16_t autoinput_buttons_at(double t_seconds) {
         }
     }
     uint16_t out = 0;
+    g_autoinput_x = 0.0f; g_autoinput_y = 0.0f;
     for (const Press& p : presses) {
-        if (t_seconds >= p.t && t_seconds < p.t + 0.5) out |= p.mask;
+        if (t_seconds >= p.t && t_seconds < p.t_end) {
+            out |= p.mask;
+            if (p.sx) g_autoinput_x = p.sx; if (p.sy) g_autoinput_y = p.sy;
+        }
     }
     return out;
 }
@@ -500,6 +540,7 @@ bool get_input(int controller_num, uint16_t* buttons, float* x, float* y) {
         static const auto t0 = steady_clock::now();
         double t = duration<double>(steady_clock::now() - t0).count();
         uint16_t scripted = autoinput_buttons_at(t);
+        *x += g_autoinput_x; *y += g_autoinput_y;
         if (scripted) {
             static uint16_t last = 0;
             if (scripted != last) printf("[input] scripted buttons 0x%04X at %.1fs\n", scripted, t);
@@ -577,6 +618,9 @@ extern "C" void swe1r_osViBlack_recomp(uint8_t* rdram, recomp_context* ctx) {
 }
 
 void swe1r_dl_watchdog_tick(); // rt64_render_context.cpp
+#if defined(__APPLE__) && defined(__aarch64__)
+static void swe1r_arm_hw_watch(uint8_t* rdram, uint32_t n64_addr);
+#endif
 
 void vi_callback() {
     // Called every VI interrupt
@@ -589,6 +633,26 @@ void vi_callback() {
         printf("[SWE1R] SWE1R_QUIT_AFTER: requesting quit at retrace %u\n", n);
         ultramodern::quit();
     }
+
+    // Debug: report large frame delta times (double at 0x80120BF0, seconds).
+    static const bool log_dt = std::getenv("SWE1R_LOG_DT") != nullptr;
+    if (log_dt && g_rdram_base) {
+        uint64_t bits = ((uint64_t)*(uint32_t*)(g_rdram_base + 0x120BF0) << 32) | *(uint32_t*)(g_rdram_base + 0x120BF4);
+        double dt; memcpy(&dt, &bits, 8);
+        static double last = 0;
+        if (dt != last && (dt > 0.1 || dt < 0)) printf("[dt] frame delta %.3f s at retrace %u\n", dt, n);
+        last = dt;
+    }
+
+#if defined(__APPLE__) && defined(__aarch64__)
+    // Debug: SWE1R_HWWATCH="0x800A8150:46" arms a hardware write watchpoint at 46 s.
+    static const char* hwwatch = std::getenv("SWE1R_HWWATCH");
+    if (hwwatch && g_rdram_base) {
+        static uint32_t at = 0, addr = 0;
+        if (at == 0) { addr = strtoul(hwwatch, nullptr, 16); const char* c = strchr(hwwatch, ':'); at = (c ? atoi(c + 1) : 40) * 60; }
+        if (n == at) swe1r_arm_hw_watch(g_rdram_base, addr);
+    }
+#endif
 
     uint32_t target = g_unblack_at.load(std::memory_order_relaxed);
     if (target != 0 && n >= target) {
@@ -939,6 +1003,15 @@ static void posix_crash_handler(int sig, siginfo_t* info, void* /*ucontext*/) {
                 (void*)g_rdram_base, (long long)off, tag);
         fprintf(stderr, "[CRASH] -> N64 word addr ~0x%08X  byte addr ~0x%08X\n",
                 n64, n64_b);
+        // SWE1R_CRASH_DUMP=path: write the 8 MB RDRAM (native word order) for offline analysis.
+        if (const char* dump = getenv("SWE1R_CRASH_DUMP")) {
+            int fd = open(dump, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (fd >= 0) {
+                ssize_t n = write(fd, g_rdram_base, 0x800000);
+                close(fd);
+                fprintf(stderr, "[CRASH] RDRAM dumped to %s (%zd bytes)\n", dump, n);
+            }
+        }
     } else {
         fprintf(stderr, "[CRASH] rdram_base not set yet\n");
     }
@@ -959,7 +1032,42 @@ static void install_posix_crash_handlers() {
     sigemptyset(&sa.sa_mask);
     sigaction(SIGSEGV, &sa, nullptr);
     sigaction(SIGBUS, &sa, nullptr);
+    sigaction(SIGTRAP, &sa, nullptr); // in-process hardware watchpoints (SWE1R_HWWATCH)
 }
+
+#if defined(__APPLE__) && defined(__aarch64__)
+// Debug: arm an ARM64 hardware write watchpoint on every thread of this process.
+// The first store to the watched N64 word raises SIGTRAP and the crash handler
+// prints the writer's backtrace. No debugger attached, so timing is unchanged.
+static void swe1r_arm_hw_watch(uint8_t* rdram, uint32_t n64_addr) {
+    // Watch n64_addr, up to two more N64 words from SWE1R_HWWATCH2 (comma list),
+    // and the KSEG1 alias of n64_addr (4 hardware watchpoints at most).
+    std::vector<uint64_t> hosts;
+    hosts.push_back((uint64_t)(rdram + (n64_addr & 0x7FFFFF)));
+    if (const char* more = std::getenv("SWE1R_HWWATCH2")) {
+        for (const char* p = more; p && *p; ) { hosts.push_back((uint64_t)(rdram + (strtoul(p, nullptr, 16) & 0x7FFFFF))); p = strchr(p, ','); if (p) p++; }
+    }
+    hosts.push_back((uint64_t)(rdram + 0x20000000u + (n64_addr & 0x7FFFFF)));
+    if (hosts.size() > 4) hosts.resize(4);
+    thread_act_array_t threads; mach_msg_type_number_t count = 0;
+    if (task_threads(mach_task_self(), &threads, &count) != KERN_SUCCESS) return;
+    int ok = 0;
+    for (mach_msg_type_number_t i = 0; i < count; i++) {
+        arm_debug_state64_t st{};
+        mach_msg_type_number_t sc = ARM_DEBUG_STATE64_COUNT;
+        thread_get_state(threads[i], ARM_DEBUG_STATE64, (thread_state_t)&st, &sc);
+        for (size_t k = 0; k < hosts.size(); k++) {
+            uint32_t bas = 0xFu << (hosts[k] & 4);
+            st.__wvr[k] = hosts[k] & ~7ull;
+            st.__wcr[k] = (bas << 5) | (2u << 3) | (2u << 1) | 1u; // BAS, store, EL0, enable
+        }
+        if (thread_set_state(threads[i], ARM_DEBUG_STATE64, (thread_state_t)&st, ARM_DEBUG_STATE64_COUNT) == KERN_SUCCESS) ok++;
+        mach_port_deallocate(mach_task_self(), threads[i]);
+    }
+    vm_deallocate(mach_task_self(), (vm_address_t)threads, count * sizeof(thread_act_t));
+    printf("[hwwatch] armed %zu watchpoints (first 0x%08X) in %d/%u threads\n", hosts.size(), n64_addr, ok, count);
+}
+#endif
 
 #endif // _WIN32
 
