@@ -1,6 +1,6 @@
 # Paso 1: la imagen debe llenar la ventana a 4:3
 
-Estado a 2026-10-16: investigado y con un arreglo candidato preparado. **Falta verificarlo con capturas** (el Mac estaba bloqueado y `screencapture` no podía ver la ventana). Nada commiteado todavía.
+Estado a 2026-10-16: **paso 1 sin resolver** en el modo de la intro/cutscenes. El arreglo candidato original no funcionó (ver abajo). Sin cambios de código en el juego; solo documentación y `tools/capture_window.sh`.
 
 ## Resultado de la sesión del 2026-10-16 (con capturas reales)
 
