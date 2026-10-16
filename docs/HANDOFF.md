@@ -4,19 +4,26 @@ Last updated: 2026-10-16. Branch `main`, not pushed.
 
 ## Where we are
 
-The N64 recomp of *Star Wars Episode I: Racer* builds and runs natively on macOS (M1 Max, Metal via RT64). The game runs the intro, the title/hangar menu and a race loop for minutes without crashing. ESC quits cleanly.
+The N64 recomp of *Star Wars Episode I: Racer* builds and runs natively on macOS (M1 Max, Metal via RT64) and is **playable**: intro, title, menus (pilot creation, vehicle, tournament, track) and races with HUD. A 17-minute play session by keyboard had no crashes or hangs. ESC quits cleanly. No sound yet. **Not verified:** the finish line and results screen (nobody has completed 3 laps yet).
 
-Visually confirmed: intro and hangar menu render correctly (models, textures, lighting).
+What was fixed on 2026-10-16 (details in commit messages and `docs/STEP1_ASPECT.md`):
 
-**Aspect fixed (step 1 done):** intro, cutscenes and title fill the window at 4:3, upscaled. Two causes, both in how RT64 handles the game's 640-wide serrate VI mode (`status=0x13052`): `removeBlackBorders` sized the virtual screen from a 320x476 framebuffer (narrow column), and `VI::fbAddress()` subtracted a 640-pixel row from the origin so RT64 never found the game's 320-wide framebuffer and fell back to a low-res RDRAM copy. Details in `docs/STEP1_ASPECT.md`. Races not checked visually yet.
+| Problem | Cause | Fix |
+|---|---|---|
+| Intro/menus in a narrow box, then pixelated | RT64 `removeBlackBorders` sized the screen from a 320x476 estimate in the 640-wide serrate VI mode; `VI::fbAddress()` stepped back a 640-pixel row, so the real 320-wide framebuffer was never found | `removeBlackBorders` off; RT64 patch `rt64-serrate-fbaddress.patch` |
+| Random SIGBUS / hangs on the player-select menu | Game's 64-bit timer `func_800811DC` raced between game threads, added a fake osGetCount wrap (+91.6 s); animation update `func_80006848` <-> `func_80006790` recursed once per loop period and the main stack overwrote .data/.bss | Redirected to `swe1r_get_time64_recomp` (same algorithm under a mutex) |
+| Magenta strip on screen edges (title, under the pods), flickering | New RT64 render targets hold uninitialized Metal memory; the game never draws the overscan edges | RT64 patch `rt64-workload-clear-new-targets.patch` clears them |
+| Freeze on scene changes ("display list running for >2 s") | A sub-list pointing into zeroed memory; RT64 ran zeros as G_NOOP forever | `send_dl` pre-walks the list tree and drops such a frame (`[dl]` log); gfx tasks wait until RT64 parsed them |
 
-**Race reached (2026-10-16, evening):** the menus work end to end. Start, Start, then A repeatedly creates pilot "AAA" (Anakin) and starts Amateur race 1, The Boonta Training Course, with HUD and timer. Holding throttle for 4 minutes ran without crashes. The blocker was the game's 64-bit timer `func_800811DC`: two game threads interleaving inside it added a spurious osGetCount wrap, so time jumped 91.6 s (or 183 s). The animation update (`func_80006848` <-> `func_80006790`) then recursed once per loop period of that delta and the main thread's stack ran down through .data/.bss: random SIGBUS in `func_80006C00`/`func_80013DC0`, hangs. Fixed by redirecting it to `swe1r_get_time64_recomp` (same algorithm under a mutex). A full 3-lap race still needs someone to steer.
-
-Unattended route to the race (about 75 s):
+Unattended route to a race (about 75 s), holding throttle:
 
 ```bash
 SWE1R_AUTOINPUT="31:start,37:start,43:a,48:a,53:a,58:a,63:a,68:a,74-300:a" ./build/SWE1Racer
 ```
+
+The save file already holds pilot "AAA" (Anakin) from testing.
+
+**Heads-up:** this Mac is often loaded by other sessions' visionOS simulators and VMs (load average in the hundreds). That makes the game stutter and shakes out timing bugs. Never launch a test instance while someone is playing: it competes for CPU/GPU, and `tools/capture_window.sh` grabs the first game window it finds.
 
 ## Setup on this Mac
 
@@ -25,7 +32,8 @@ SWE1R_AUTOINPUT="31:start,37:start,43:a,48:a,53:a,58:a,63:a,68:a,74-300:a" ./bui
 | ROM | `~/Downloads/sw racer.z64`, copied to `baserom.z64` and `swe1racer.z64` (both gitignored) |
 | N64Recomp (built) | `../N64Recomp/build/N64Recomp` |
 | N64ModernRuntime | `../N64ModernRuntime` (upstream main, unmodified) |
-| RT64 | `../rt64` (upstream main `de343a5`) plus `patches/rt64-*.patch`, applied automatically by CMake at configure time |
+| RT64 | `../rt64` (upstream main `de343a5`) plus `patches/rt64-*.patch` (serrate fbAddress, overscan crop option, clear new targets), applied by CMake at configure time; already-applied patches are skipped |
+| Real-ESRGAN (texture upscaler) | `../tools_ext/realesrgan/realesrgan-ncnn-vulkan` (v0.2.5.0 macOS zip, universal binary, runs on the M1 GPU) |
 | Save file | `saves/swe1racer.bin` (16 kbit EEPROM, 2 KB) |
 
 ## Build and run
@@ -91,16 +99,31 @@ All of these are implemented host-side in `src/main.cpp`, `src/rt64_render_conte
 
 ## Texture packs (HD textures project)
 
-Phase 1 done: dump with `SWE1R_DUMP_TEXTURES`, edit or upscale the PNGs keeping their names, then `python3 tools/make_texture_pack.py SRC texture_packs/name.rtz`. Verified with a red/blue-swapped 4x pack on the title screen. Next: phase 2 pilot on The Boonta Training Course (dump while playing it, AI upscale with wrap-aware padding and alpha handling, compare), then all tracks. louriccia/SWE1R-Mods has no usable HD textures (PC `.bin` packs).
+Goal: higher-quality textures through RT64 replacement packs (`.rtz` = zip with `rt64.json` mapping texture hashes to images). louriccia/SWE1R-Mods has nothing usable for this (PC `.bin` packs and joke recolors).
+
+- **Phase 1, runtime support: done** (commit `005ebdf`). Verified with a red/blue-swapped, 4x pack on the title screen.
+- **Phase 2, upscaling: started.** `tools/upscale_textures.py` runs Real-ESRGAN (`realesrgan-x4plus`) at 4x with 3x3 wrap tiling so repeating textures don't show seams, and upscales alpha separately (thresholded back to 0/255 for cut-outs). It upscaled the 459 textures dumped up to the title screen in about 3 minutes. **Not yet looked at in game.**
+
+Workflow:
+
+```bash
+SWE1R_DUMP_TEXTURES=tex_dump ./build/SWE1Racer           # play through what you want covered
+python3 tools/upscale_textures.py tex_dump hd_out          # 4x AI upscale, same file names
+python3 tools/make_texture_pack.py hd_out texture_packs/hd.rtz
+./build/SWE1Racer                                          # loads texture_packs/*.rtz
+```
+
+Next: build a pack from that title upscale and compare in game; then the pilot on The Boonta Training Course (dump while playing it); review results (fonts/HUD probably need excluding, I4/IA textures may look plastic); then all 25 tracks. `tex_dump/` and `texture_packs/` are gitignored.
 
 ## Next steps, in order
 
-1. **Gamepad via SDL**: game controller API, analog stick mapping, rumble.
-2. **Audio**: recompile the game's audio microcode (`ucode=0x80099450`, `data=0x800AE5F0`) with RSPRecomp, feed SDL audio. Revisit the yield emulation then, since it re-runs resumed audio tasks.
-3. **Play-test races** on several tracks to catch remaining game-logic crashes.
-4. **RT64 enhancements**: widescreen (note: RT64's source aspect in the serrate mode is still 320/476, so `Expand` will need a look), high resolution, interpolated 60 fps.
-5. **macOS `.app` bundle**: icon, ROM import on first launch, saves in Application Support.
-6. **Vision Pro stereo** (see the `avp-game-port` skill).
+1. **Finish a race** by hand and check the results screen and the next race.
+2. **Gamepad via SDL**: game controller API, analog stick mapping, rumble.
+3. **Audio**: recompile the game's audio microcode (`ucode=0x80099450`, `data=0x800AE5F0`) with RSPRecomp, feed SDL audio. Revisit the yield emulation then, since it re-runs resumed audio tasks.
+4. **Play-test races** on several tracks to catch remaining game-logic crashes.
+5. **RT64 enhancements**: widescreen (note: RT64's source aspect in the serrate mode is still 320/476, so `Expand` will need a look), high resolution, interpolated 60 fps.
+6. **macOS `.app` bundle**: icon, ROM import on first launch, saves in Application Support.
+7. **Vision Pro stereo** (see the `avp-game-port` skill).
 
 ## Known loose ends
 
@@ -109,3 +132,4 @@ Phase 1 done: dump with `SWE1R_DUMP_TEXTURES`, edit or upscale the PNGs keeping 
 - Windows build: Win32 paths kept under `_WIN32` but not compiled since the port. The KSEG1 RDRAM mirror needs a `MapViewOfFile` equivalent there.
 - `on_game_init` still writes hacks (PI handle at 0x800A7BC0/0x800A7FC0, fake VI context at 0x800A7F00) that predate the real VI functions. 0x800A7BC0 is actually `__osRunningThread`. Worth revisiting.
 - Lots of diagnostic logging (`[si]`, `[pi]`, `[vi]`, `[perf]`). Trim once things are stable.
+- Why game threads can run concurrently at all (ultramodern should serialize them) is not understood. The timer race and possibly the stale-segment display lists come from it.
