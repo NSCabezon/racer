@@ -1,6 +1,6 @@
 # Handoff: SWE1Racer on Apple Silicon
 
-Last updated: 2026-10-17. Branch `main`, not pushed.
+Last updated: 2026-10-17. Branch `main`, pushed to `nscabezon` (NSCabezon/racer).
 
 ## Where we are
 
