@@ -132,6 +132,24 @@ tools/build_hd_pack.sh                           # incremental upscale -> textur
 
 Next: dump the other 24 tracks (needs playing them by hand; autoinput only reaches the first), look for textures the AI spoils (I4/IA ones may look plastic) and list them in `textures/exclude.txt`.
 
+## PC version: same assets, not worth porting (checked 2026-10-17)
+
+Question was whether the 1999 Windows release would look better (more polygons, sharper textures) and deserve the same treatment. Measured against the user's PC CD image (`~/Downloads/SW racer PC.zip`, MODE1/2352 bin; data in `gnome/data/lev01/out_*block.bin`, big-endian, same formats as the N64 ROM):
+
+| Models | N64 triangles | PC triangles |
+|---|---|---|
+| Tracks (25) | 241,257 | 241,212 |
+| Pods (25) | 18,901 | 18,901 |
+| Pupp, characters (38) | 12,995 | 12,995 |
+| Part (183) | 38,684 | 38,684 |
+| Scen, menu scenery | 2 models, 910 | 18 models, 22,134 |
+
+- Geometry is identical model for model; tracks differ by under 1%.
+- Textures: 95% of the 3,154 texture-block chunks are byte-identical, same total size. The PC release reused the N64 assets.
+- Only real extra: 16 3D menu scenes on PC. Its "better looks" back then came from rendering resolution, which RT64 already gives us.
+
+Decision: stay on the N64 recomp. ROM layout found on the way: model block at ROM `0x141e200` (307 models; 92 are `Comp`, LZSS, see `func_80011940`), texture block at `0x102abb0` (1648 textures). `tools/modelblock.py` parses either version and counts meshes, vertices and triangles; useful if model replacement ever comes up.
+
 ## Next steps, in order
 
 1. **Finish a race** by hand and check the results screen and the next race.
