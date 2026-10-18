@@ -25,9 +25,10 @@ FONT = "/System/Library/Fonts/Supplemental/Arial Black.ttf"
 # the contour rebuild for that glyph. None = contour rebuild for the atlas.
 LAYOUTS = {
     "7ee32ce753e56246": ["ABCDEF", "GHIJKLM", "NOPQRS", "TUVWXY", "Z:;-!?01",
-                         "2345678", "9....", ".....", ".."],
+                         "2345678", "9..\u00ab\u00bb", ".....", ".."],
     "e9e795d7b9978059": ["ABCDEFG", "OPQRSTU", ":;-!?()/", "HIJKLMN", "VWXYZ",
-                         "1234567", "890...", "....", ".....", ".."],
+                         "1234567", "890\u2122\u00a9\u00ae", "..\u00ab\u00bb",
+                         ".....", ".."],
     "2e245c4c9fa9f66a": None,
 }
 
