@@ -3,3 +3,6 @@
 # (AI upscaling smears them), masks and gradients.
 #
 # Used by tools/build_hd_pack.sh for both the upscale and the pack.
+
+# Font atlases are not listed here: tools/font_atlas_hd.py redraws them
+# (Real-ESRGAN invents letter shapes on their ~7 px glyphs).

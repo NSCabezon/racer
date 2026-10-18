@@ -17,6 +17,8 @@ PACK=${PACK:-texture_packs/hd.rtz}
 EXCLUDE=textures/exclude.txt
 
 python3 tools/upscale_textures.py "$SRC" "$HD" --skip-existing --exclude "$EXCLUDE"
+# font atlases: vector redraw instead of AI upscaling (always rewritten)
+python3 tools/font_atlas_hd.py "$SRC" "$HD"
 
 STAGE=$(mktemp -d); trap 'rm -rf "$STAGE"' EXIT
 python3 - "$HD" "$STAGE" "$EXCLUDE" <<'PY'

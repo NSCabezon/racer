@@ -130,6 +130,8 @@ tools/build_hd_pack.sh                           # incremental upscale -> textur
 ./build/SWE1Racer                                # loads texture_packs/*.rtz
 ```
 
+- **Fonts redrawn, not upscaled (2026-10-18).** The three font atlases (I4 64x128: big and small alphabets, italic HUD digits) came out of Real-ESRGAN with invented letter shapes (broken N, M, G, 9; reported on the main menu). `tools/font_atlas_hd.py` finds each glyph's sub-pixel ink box and redraws it from Arial Black stretched onto that box (the I gets slab serifs like the original); symbols and the HUD digits get a contour rebuild (bicubic 4x + smoothstep). `tools/build_hd_pack.sh` runs it after the upscaler. Checked on the atlases; not yet seen in game (window capture failed, screen likely locked).
+
 Next: dump the other 24 tracks (needs playing them by hand; autoinput only reaches the first), look for textures the AI spoils (I4/IA ones may look plastic) and list them in `textures/exclude.txt`.
 
 ## PC version: same assets, not worth porting (checked 2026-10-17)
