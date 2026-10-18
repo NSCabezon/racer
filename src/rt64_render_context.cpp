@@ -119,6 +119,7 @@ void swe1r_dl_watchdog_tick() {
 
 extern "C" void swe1r_signal_sp_done(); // main.cpp
 extern "C" void swe1r_gfx_task_parsed(); // main.cpp
+extern "C" float swe1r_draw_distance(); // main.cpp, SWE1R_DRAW_DISTANCE
 
 class SWE1RRenderContext : public ultramodern::renderer::RendererContext {
 public:
@@ -240,6 +241,9 @@ public:
             printf("[SWE1R] RT64 initialized successfully\n");
             is_valid_ = true;
             setup_texture_replacements();
+            // The far plane is scaled game-side (swe1r_set_camera_params_recomp);
+            // stretch the fog by the same factor (patches/rt64-fog-scale.patch).
+            app_->state->rsp->fogScale = swe1r_draw_distance();
             break;
         case RT64::Application::SetupResult::DynamicLibrariesNotFound:
             fprintf(stderr, "[SWE1R] RT64: Dynamic libraries not found\n");

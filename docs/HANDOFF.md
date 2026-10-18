@@ -1,6 +1,6 @@
 # Handoff: SWE1Racer on Apple Silicon
 
-Last updated: 2026-10-17. Branch `main`, pushed to `nscabezon` (NSCabezon/racer).
+Last updated: 2026-10-18. Branch `main`; pushed to `nscabezon` (NSCabezon/racer) up to `ab3ac20`. Draw-distance work committed locally (not pushed), see "Draw distance".
 
 ## Where we are
 
@@ -74,6 +74,7 @@ Developer env vars:
 | `SWE1R_MUTE=1` | No audio device; a wall-clock drain stands in so the game's audio pacing is unchanged |
 | `SWE1R_AUDIO_LOG=1` | Once per second: frequency, frames received/s, queue depth (min/max), peak sample, AI FIFO-full answers, underruns, aspMain task count |
 | `SWE1R_RBB=1` | Turn RT64's `removeBlackBorders` back on (default off; on breaks the serrate mode) |
+| `SWE1R_DRAW_DISTANCE=2` | Multiply the race far plane by this factor and stretch the fog to match (default 1 = N64). The PC release's "high" draw distance was 1.5. See "Draw distance" below |
 
 ## Debugging recipe
 
@@ -135,6 +136,17 @@ tools/build_hd_pack.sh                           # incremental upscale -> textur
 
 Next: dump the other 24 tracks (needs playing them by hand; autoinput only reaches the first), look for textures the AI spoils (I4/IA ones may look plastic) and list them in `textures/exclude.txt`.
 
+## Draw distance (2026-10-18)
+
+What limits it is the projection far plane, which equals the track's fog distance, and the fog ends at that far plane. The game does not cull by distance on the CPU: with a 4x far plane the display lists have the same triangle counts.
+
+- `0x80086730` is `swrViewport_SetCameraParameters(vp, fovY, aspect, near, far, wnorm)` (PC name; viewports at `0x80120DF0`, stride 0x170, far at +0x144). `0x80085FB0` builds the projection from it. The PC version scales `far` there by its DRAWDISTANCE option (x1.5 high, x0.4 low). The N64 has no such option.
+- In a race the camera manager (`0x80042EF4`, PC `swrObjcMan`) passes near = cMan+0x2B4 (5) and far = cMan+0x2D4 (`fogDist`). `fogDist` eases toward cMan+0x2D8, which `0x80040E90` loads from the `fog_end` of the track surface data (`swrModel_Behavior`; capped at 1200 with 2+ players). Boonta Training: far ~3500.
+- Fog: `SetFogParameters` (`0x80038DF8`) gets start = cMan+0x2DC (996 here, from `fog_start`) and end = 1000. Both are in the 0-1000 depth scale, so the fog ends exactly at the far plane. `0x80038AB0` emits `G_MW_FOG` (mul 32000, off -31744) unless the fog-disabled bit 0x40 at 0x800C697C is set.
+- Implementation: `swe1r_set_camera_params_recomp` (src/main.cpp, a call-site rewrite in `tools/post_recomp_patches.py`) multiplies `far` (stack arg at sp+0x10). Scaling far alone leaves the fog in the same z/w band near 1, so distant scenery shows but stays hazy. Stretching the fog needs a multiplier k times larger, which the 16-bit `G_MW_FOG` word can't hold (32000 is already near the limit). `patches/rt64-fog-scale.patch` adds `RSP::fogScale` (mul' = k*mul, off' = off + mul*(1-k)), set from the same variable. That keeps the fog curve's shape over k times the distance.
+- Checked on Boonta Training (captures at x1, x1.5, x2, x4): grandstands and the mesas beyond the stadium appear with light fog where the N64 showed fog colour. No near-plane change (near stays 5) and no visible z-fighting. RT64 display-list parse time is unchanged (GPU cost not measured). Caveat: the fog scale applies to every `G_MW_FOG`. In testing fog only came with the camera-manager projection (race and the attract intro, perspnorm 655), so the two stay in step.
+- Status: opt-in, default 1. Not yet decided: the default factor (user to compare x1.5 vs x2 against a PC capture by eye), other tracks, multiplayer (far capped at 1200), GPU cost, and non-race cameras (0x80052C60, 0x8004DAEC, 0x800442A0/CC also go through the wrapper; not checked by eye).
+
 ## PC version: same assets, not worth porting (checked 2026-10-17)
 
 Question was whether the 1999 Windows release would look better (more polygons, sharper textures) and deserve the same treatment. Measured against the user's PC CD image (`~/Downloads/SW racer PC.zip`, MODE1/2352 bin; data in `gnome/data/lev01/out_*block.bin`, big-endian, same formats as the N64 ROM):
@@ -155,6 +167,7 @@ Decision: stay on the N64 recomp. ROM layout found on the way: model block at RO
 
 ## Next steps, in order
 
+0. **Freeze + quit hang (2026-10-18, see Known loose ends)**, then pick the draw-distance default and commit it.
 1. **Finish a race** by hand and check the results screen and the next race.
 2. **Gamepad via SDL**: game controller API, analog stick mapping, rumble.
 3. **Audio**: working (see below). First listen by a human on 2026-10-17: sounds right in menus and a race. Keep an ear out for missing effects on untested screens (some audio functions may still be stubbed).
@@ -164,6 +177,8 @@ Decision: stay on the N64 recomp. ROM layout found on the way: model block at RO
 7. **Vision Pro stereo** (see the `avp-game-port` skill).
 
 ## Known loose ends
+
+- **Freeze seen by the user, then a hung quit (2026-10-18, open).** Run with `SWE1R_DRAW_DISTANCE=2` and autoinput, still in the intro/menu (~55 s, ~3420 display lists, no race yet). The picture froze for the user; the log shows the game still producing display lists and `update_screen` up to the end, with no `[dl]`/watchdog warnings. Right before, the window got focus (SDL window events 12 FOCUS_GAINED, 10 ENTER, 3 EXPOSED); it had been behind Preview. Then `Render context shutdown` started and hung after `[sp] gfx task 3427 not parsed after 3 s, continuing`; the user force-quit (exit 137). Two suspects: (1) the Metal layer stops presenting after the window is occluded and refocused, while the game keeps running; (2) a shutdown that starts while a gfx task waits for RT64 to parse it deadlocks. (2) is a real bug regardless. Not yet asked/answered: did audio keep playing, ESC or window close. Probably unrelated to the draw distance (no race reached). Log: the session scratchpad's live2.log (gone after the session); repro by launching, covering the window, refocusing it after ~50 s, then pressing ESC.
 
 - Display-list hang (RT64 executing zeros as no-ops forever) is mitigated: `send_dl` pre-walks the F3DEX2 tree and drops a frame whose list runs into zeros, logging `[dl] list at ... runs into zeros`. Seen once: a sub-list call from model data at 0x801BFE58 landing at ~0x806D0000 (just below a framebuffer), so probably a stale segment register on a scene change. Root cause still open. Graphics tasks also wait until RT64 has parsed them (`swe1r_osSpTaskStartGo_recomp`), keeping hardware ordering.
 

@@ -327,6 +327,42 @@ extern "C" void swe1r_get_time64_recomp(uint8_t* rdram, recomp_context* ctx) {
     ctx->r3 = (int32_t)(uint32_t)t;
 }
 
+// SWE1R_DRAW_DISTANCE=<factor>: draw distance multiplier (default 1 = N64).
+// 0x80086730 is the game's swrViewport_SetCameraParameters(vp, fovY, aspect,
+// near, far, wnorm) (name from the PC decompilation, where the same function
+// applies the PC "draw distance" option: far x1.5 on high, x0.4 on low). In a
+// race the camera manager (0x80042EF4) passes the track's fog distance as far
+// (cMan+0x2D4, eased toward cMan+0x2D8, loaded from the track's surface fog_end by
+// 0x80040E90); everything past it is clipped. The same
+// factor stretches the fog (see the RT64 fog scale in rt64_render_context.cpp)
+// so the fog curve keeps its shape over the longer distance.
+extern "C" float swe1r_draw_distance() {
+    static const float k = [] {
+        const char* v = std::getenv("SWE1R_DRAW_DISTANCE");
+        float f = v ? (float)atof(v) : 1.0f;
+        if (!(f >= 0.1f && f <= 100.0f)) f = 1.0f;
+        if (f != 1.0f) printf("[draw] draw distance x%.2f\n", f);
+        return f;
+    }();
+    return k;
+}
+
+extern "C" void static_0_80086730(uint8_t* rdram, recomp_context* ctx);
+extern "C" void swe1r_set_camera_params_recomp(uint8_t* rdram, recomp_context* ctx) {
+    const float k = swe1r_draw_distance();
+    if (k != 1.0f) {
+        // far is the 5th argument: the caller's stack slot at sp+0x10.
+        uint32_t* slot = (uint32_t*)(rdram + (((uint32_t)ctx->r29 + 0x10) & 0x7FFFFF));
+        float far_clip;
+        memcpy(&far_clip, slot, 4);
+        if (far_clip > 0.0f) {   // <= 0 means "keep the current value"
+            far_clip *= k;
+            memcpy(slot, &far_clip, 4);
+        }
+    }
+    static_0_80086730(rdram, ctx);
+}
+
 // osPiStartDma(mb, pri, dir, devAddr, dramAddr, size, mq): logged pass-through
 // to librecomp's synchronous DMA (the game's PI manager thread is stubbed).
 extern "C" void osPiStartDma_recomp(uint8_t* rdram, recomp_context* ctx);

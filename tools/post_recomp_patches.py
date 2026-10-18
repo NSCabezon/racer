@@ -70,6 +70,7 @@ EXTRA_DECLS = [
     "osAiSetNextBuffer_recomp",
     "osAiGetLength_recomp",
     "swe1r_osAiGetStatus_recomp",
+    "swe1r_set_camera_params_recomp",
 ]
 
 # Call-site rewrites: callee name -> replacement, applied to every call in the
@@ -100,6 +101,9 @@ CALL_REWRITES = {
     # osSpTaskStartGo: graphics tasks wait until RT64 parsed the list, like the
     # RSP finishing before the CPU frees what the list references.
     "osSpTaskStartGo_recomp": "swe1r_osSpTaskStartGo_recomp",
+    # static_0_80086730 = swrViewport_SetCameraParameters (fov, aspect, near,
+    # far): the host wrapper scales far by SWE1R_DRAW_DISTANCE, then calls it.
+    "static_0_80086730": "swe1r_set_camera_params_recomp",
 }
 
 def add_missing_decls():

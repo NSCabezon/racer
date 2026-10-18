@@ -1,0 +1,33 @@
+diff --git a/src/hle/rt64_rsp.cpp b/src/hle/rt64_rsp.cpp
+index 1da2550..7cbb774 100644
+--- a/src/hle/rt64_rsp.cpp
++++ b/src/hle/rt64_rsp.cpp
+@@ -988,8 +988,8 @@ namespace RT64 {
+     }
+ 
+     void RSP::setFog(int16_t mul, int16_t offset) {
+-        fog.mul = mul;
+-        fog.offset = offset;
++        fog.mul = mul * fogScale;
++        fog.offset = offset + mul * (1.0f - fogScale);
+         fogChanged = true;
+     }
+     
+diff --git a/src/hle/rt64_rsp.h b/src/hle/rt64_rsp.h
+index 61bb3b1..b3a5143 100644
+--- a/src/hle/rt64_rsp.h
++++ b/src/hle/rt64_rsp.h
+@@ -178,6 +178,13 @@ namespace RT64 {
+         TextureState textureState;
+         uint32_t objRenderMode;
+         interop::RSPFog fog;
++
++        // Host-side fog distance scale (1 = as the game asks). When the host
++        // pushes the far plane out by a factor k, (z/w - 1) near the far plane
++        // shrinks by about 1/k; scaling the fog slope by k around z/w = 1
++        // stretches the fog over the same k times longer distance. The game's
++        // 16-bit fog multiplier can't express that itself.
++        float fogScale = 1.0f;
+         bool NoN;
+         uint32_t cullBothMask;
+         uint32_t cullFrontMask;
